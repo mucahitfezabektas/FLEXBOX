@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use calamine::{open_workbook_auto, Reader};
+use calamine::{open_workbook_auto, Data, Range, Reader};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     fs,
@@ -31,7 +31,7 @@ struct SpreadsheetRuntime {
     file_path: Option<String>,
     file_name: Option<String>,
     sheet_name: Option<String>,
-    rows: Vec<Vec<String>>,
+    sheet_range: Option<Range<Data>>,
     total_rows: usize,
     total_cols: usize,
 }
@@ -61,6 +61,14 @@ struct SpreadsheetChunkResponse {
     total_rows: usize,
     total_cols: usize,
     rows: Vec<Vec<String>>,
+}
+
+struct LoadedSheet {
+    file_name: String,
+    sheet_name: String,
+    range: Range<Data>,
+    total_rows: usize,
+    total_cols: usize,
 }
 
 fn app_config_file_path(app: &tauri::AppHandle, file_name: &str) -> Result<PathBuf, String> {
@@ -142,9 +150,23 @@ fn file_name_from_path(path: &Path) -> String {
         .unwrap_or_else(|| "workbook.xlsx".to_string())
 }
 
+fn serialize_cell(cell: &Data) -> String {
+    match cell {
+        Data::Int(value) => value.to_string(),
+        Data::Float(value) => value.to_string(),
+        Data::String(value) => value.clone(),
+        Data::Bool(value) => value.to_string(),
+        Data::DateTime(value) => value.to_string(),
+        Data::DateTimeIso(value) => value.clone(),
+        Data::DurationIso(value) => value.clone(),
+        Data::Error(value) => format!("#{:?}", value),
+        Data::Empty => String::new(),
+    }
+}
+
 #[tauri::command]
-fn load_excel_file(
-    state: tauri::State<SpreadsheetState>,
+async fn load_excel_file(
+    state: tauri::State<'_, SpreadsheetState>,
     path: String,
 ) -> Result<SpreadsheetLoadResult, String> {
     let workbook_path = PathBuf::from(&path);
@@ -153,44 +175,51 @@ fn load_excel_file(
         return Err("selected Excel file does not exist".to_string());
     }
 
-    let mut workbook =
-        open_workbook_auto(&workbook_path).map_err(|error| format!("failed to open Excel file: {error}"))?;
+    let loaded_sheet = tauri::async_runtime::spawn_blocking(move || -> Result<LoadedSheet, String> {
+        let mut workbook = open_workbook_auto(&workbook_path)
+            .map_err(|error| format!("failed to open Excel file: {error}"))?;
 
-    let sheet_name = workbook
-        .sheet_names()
-        .first()
-        .cloned()
-        .ok_or_else(|| "workbook does not contain any worksheets".to_string())?;
+        let sheet_name = workbook
+            .sheet_names()
+            .first()
+            .cloned()
+            .ok_or_else(|| "workbook does not contain any worksheets".to_string())?;
 
-    let range = workbook
-        .worksheet_range_at(0)
-        .ok_or_else(|| "failed to read first worksheet".to_string())?
-        .map_err(|error| format!("failed to parse worksheet: {error}"))?;
+        let range = workbook
+            .worksheet_range_at(0)
+            .ok_or_else(|| "failed to read first worksheet".to_string())?
+            .map_err(|error| format!("failed to parse worksheet: {error}"))?;
 
-    let (total_rows, total_cols) = range.get_size();
-    let rows = range
-        .rows()
-        .map(|row| row.iter().map(|cell| cell.to_string()).collect::<Vec<_>>())
-        .collect::<Vec<_>>();
+        let (total_rows, total_cols) = range.get_size();
 
-    let file_name = file_name_from_path(&workbook_path);
+        Ok(LoadedSheet {
+            file_name: file_name_from_path(&workbook_path),
+            sheet_name,
+            range,
+            total_rows,
+            total_cols,
+        })
+    })
+    .await
+    .map_err(|error| format!("failed to join Excel loader: {error}"))??;
+
     let result = SpreadsheetLoadResult {
-        file_name: file_name.clone(),
-        sheet_name: sheet_name.clone(),
-        total_rows,
-        total_cols,
+        file_name: loaded_sheet.file_name.clone(),
+        sheet_name: loaded_sheet.sheet_name.clone(),
+        total_rows: loaded_sheet.total_rows,
+        total_cols: loaded_sheet.total_cols,
     };
 
     let mut runtime = state
         .0
         .lock()
         .map_err(|_| "failed to acquire spreadsheet state".to_string())?;
-    runtime.file_path = Some(workbook_path.to_string_lossy().to_string());
-    runtime.file_name = Some(file_name);
-    runtime.sheet_name = Some(sheet_name);
-    runtime.rows = rows;
-    runtime.total_rows = total_rows;
-    runtime.total_cols = total_cols;
+    runtime.file_path = Some(path);
+    runtime.file_name = Some(loaded_sheet.file_name);
+    runtime.sheet_name = Some(loaded_sheet.sheet_name);
+    runtime.sheet_range = Some(loaded_sheet.range);
+    runtime.total_rows = loaded_sheet.total_rows;
+    runtime.total_cols = loaded_sheet.total_cols;
 
     Ok(result)
 }
@@ -206,15 +235,44 @@ fn get_data_chunk(
         .lock()
         .map_err(|_| "failed to acquire spreadsheet state".to_string())?;
 
-    if runtime.rows.is_empty() {
+    let sheet_range = runtime
+        .sheet_range
+        .as_ref()
+        .ok_or_else(|| "no Excel workbook has been loaded".to_string())?;
+
+    if runtime.total_rows == 0 || runtime.total_cols == 0 {
+        return Ok(SpreadsheetChunkResponse {
+            start_row: 0,
+            limit: 0,
+            total_rows: runtime.total_rows,
+            total_cols: runtime.total_cols,
+            rows: Vec::new(),
+        });
+    }
+
+    if sheet_range.is_empty() {
         return Err("no Excel workbook has been loaded".to_string());
     }
 
-    let total_rows = runtime.total_rows.min(runtime.rows.len());
+    let total_rows = runtime.total_rows.min(sheet_range.height());
     let total_cols = runtime.total_cols;
     let start_row = start_row.min(total_rows);
     let end_row = start_row.saturating_add(limit).min(total_rows);
-    let rows = runtime.rows[start_row..end_row].to_vec();
+    let mut rows = Vec::with_capacity(end_row.saturating_sub(start_row));
+
+    for row_index in start_row..end_row {
+        let mut row = Vec::with_capacity(total_cols);
+
+        for col_index in 0..total_cols {
+            let value = sheet_range
+                .get((row_index, col_index))
+                .map(serialize_cell)
+                .unwrap_or_default();
+            row.push(value);
+        }
+
+        rows.push(row);
+    }
 
     Ok(SpreadsheetChunkResponse {
         start_row,
@@ -249,7 +307,7 @@ fn spawn_backend_sidecar(app_handle: tauri::AppHandle) -> Result<(), String> {
 
     let sidecar_command = app_handle
         .shell()
-        .sidecar("uniframe-backend")
+        .sidecar("flexbox-backend")
         .map_err(|error| error.to_string())?
         .args(["--host", "127.0.0.1", "--port", "8000"]);
 
@@ -345,7 +403,7 @@ fn main() {
             get_data_chunk
         ])
         .build(tauri::generate_context!())
-        .expect("failed to build UniFrame Tauri shell")
+        .expect("failed to build FLEXBOX Tauri shell")
         .run(|app_handle, event| {
             if let tauri::RunEvent::Exit = event {
                 let state = app_handle.state::<BackendSidecarState>();

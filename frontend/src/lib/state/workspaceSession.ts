@@ -32,7 +32,7 @@ export interface WorkspaceSessionSnapshot {
   modules: Record<ModuleId, PersistedModuleWindowState>;
 }
 
-const STORAGE_KEY = 'uniframe.workspace.session.v1';
+const STORAGE_KEY = 'flexbox.workspace.session.v1';
 
 function loadWorkspaceSessionFromBrowser() {
   if (typeof localStorage === 'undefined') {

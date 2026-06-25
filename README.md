@@ -1,8 +1,8 @@
-# UniFrame
+# FLEXBOX
 
 > Modular desktop shell built with Svelte 5, Tauri 2 and FastAPI sidecars.
 
-![UniFrame Icon](frontend/public/favicon.svg)
+![FLEXBOX Icon](frontend/public/favicon.svg)
 
 ![Platform](https://img.shields.io/badge/platform-Windows%20Desktop-0f172a?style=for-the-badge&logo=windows)
 ![Frontend](https://img.shields.io/badge/frontend-Svelte%205-ff3e00?style=for-the-badge&logo=svelte)
@@ -13,7 +13,7 @@
 
 ## Overview
 
-UniFrame is a single-window desktop framework that hosts multiple internal modules inside a managed MDI workspace.
+FLEXBOX is a single-window desktop framework that hosts multiple internal modules inside a managed MDI workspace.
 The shell owns window movement, resize, maximize, taskbar state, workspace restore, theme persistence and backend orchestration.
 
 ## Highlights
@@ -21,7 +21,7 @@ The shell owns window movement, resize, maximize, taskbar state, workspace resto
 - `🪟 Custom desktop shell`: frameless Tauri window with native drag/maximize behavior.
 - `🧩 Modular workspace`: each module opens inside `DraggableResizableWindow`.
 - `⚙️ Shared state`: layout, focus order and theme are restored across sessions.
-- `🚀 Embedded backend`: FastAPI is packaged as a Tauri sidecar named `uniframe-backend`.
+- `🚀 Embedded backend`: FastAPI is packaged as a Tauri sidecar named `flexbox-backend`.
 - `🏗️ One-command release`: `build.py` syncs versions, builds the sidecar and produces the NSIS installer.
 
 ## Architecture
@@ -33,7 +33,7 @@ flowchart LR
     B --> D["Workspace State"]
     B --> E["Shell Commands"]
     E --> F["Rust Core"]
-    F --> G["uniframe-backend Sidecar"]
+    F --> G["flexbox-backend Sidecar"]
     G --> H["FastAPI APIs"]
     D --> I["Local Session Storage"]
 ```
@@ -138,8 +138,8 @@ Release pipeline summary:
 1. validates required tooling
 2. resolves the build version and syncs all manifests
 3. installs frontend and backend dependencies
-4. packages FastAPI as `uniframe-backend.exe`
-5. copies the sidecar into `src-tauri/binaries/uniframe-backend-<target>.exe`
+4. packages FastAPI as `flexbox-backend.exe`
+5. copies the sidecar into `src-tauri/binaries/flexbox-backend-<target>.exe`
 6. runs the Tauri NSIS bundle build
 7. copies the generated installer into `releases/`
 8. tracks installers with Git LFS
@@ -147,21 +147,21 @@ Release pipeline summary:
 
 ## Sidecar Packaging
 
-The backend is packaged as a Tauri sidecar with the canonical name `uniframe-backend`.
+The backend is packaged as a Tauri sidecar with the canonical name `flexbox-backend`.
 
 | Layer | Value |
 | --- | --- |
-| PyInstaller output | `build/sidecar/uniframe-backend.exe` |
-| Tauri binary registration | `src-tauri/binaries/uniframe-backend-<target>.exe` |
-| Tauri config entry | `binaries/uniframe-backend` |
-| Rust spawn name | `uniframe-backend` |
+| PyInstaller output | `build/sidecar/flexbox-backend.exe` |
+| Tauri binary registration | `src-tauri/binaries/flexbox-backend-<target>.exe` |
+| Tauri config entry | `binaries/flexbox-backend` |
+| Rust spawn name | `flexbox-backend` |
 
 This keeps packaging, permissions and runtime spawn behavior aligned.
 
 ## Project Structure
 
 ```text
-UniFrame/
+FLEXBOX/
 |-- backend/
 |   |-- __init__.py
 |   |-- main.py
@@ -183,7 +183,7 @@ UniFrame/
 |   `-- tauri.conf.json
 |-- build.py
 |-- run.py
-|-- uniframe-backend.spec
+|-- flexbox-backend.spec
 |-- version-settings.json
 `-- README.md
 ```

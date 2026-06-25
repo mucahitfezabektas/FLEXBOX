@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "UniFrame",
+  "productName": "FLEXBOX",
   "version": "0.1.0",
-  "identifier": "com.uniframe.desktop",
+  "identifier": "com.flexbox.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "UniFrame",
+        "title": "FLEXBOX",
         "width": 1480,
         "height": 920,
         "minWidth": 1100,
@@ -33,7 +33,7 @@
       "nsis"
     ],
     "externalBin": [
-      "binaries/uniframe-backend"
+      "binaries/flexbox-backend"
     ],
     "icon": [
       "icons/app.ico"

@@ -5,7 +5,7 @@ from backend.main import app
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="UniFrame FastAPI sidecar")
+    parser = argparse.ArgumentParser(description="FLEXBOX FastAPI sidecar")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()

@@ -1,7 +1,7 @@
 [package]
-name = "uniframe_shell"
+name = "flexbox_shell"
 version = "0.1.0"
-description = "Unified desktop application shell"
+description = "FLEXBOX desktop application shell"
 authors = ["Codex"]
 edition = "2021"
 

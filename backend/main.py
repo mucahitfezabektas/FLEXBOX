@@ -20,11 +20,11 @@ class LoginRequest(BaseModel):
 
 
 DEFAULT_USERNAME = "admin"
-DEFAULT_PASSWORD = "uniframe"
+DEFAULT_PASSWORD = "flexbox"
 DEFAULT_ROLE = "Administrator"
 AUTH_ITERATIONS = 200_000
 
-app = FastAPI(title="UniFrame API", version=APP_VERSION)
+app = FastAPI(title="FLEXBOX API", version=APP_VERSION)
 
 app.add_middleware(
     CORSMiddleware,
@@ -45,7 +45,7 @@ app.add_middleware(
 def config_dir() -> Path:
     appdata = os.getenv("APPDATA")
     base_dir = Path(appdata) if appdata else Path.home()
-    target_dir = base_dir / "UniFrame"
+    target_dir = base_dir / "FLEXBOX"
     target_dir.mkdir(parents=True, exist_ok=True)
     return target_dir
 
@@ -124,14 +124,14 @@ def authenticate_user(username: str, password: str) -> dict | None:
 
 @app.get("/api/health")
 async def healthcheck():
-    return {"status": "ok", "service": "uniframe-api", "version": APP_VERSION}
+    return {"status": "ok", "service": "flexbox-api", "version": APP_VERSION}
 
 
 @app.get("/api/system/context")
 async def system_context():
     auth_payload = load_auth_config()
     return {
-        "application": "UniFrame Unified Framework",
+        "application": "FLEXBOX",
         "version": APP_VERSION,
         "environment": auth_payload.get("environment", "DEV"),
         "backend": "FastAPI Sidecar",

@@ -26,12 +26,12 @@ TAURI_CONFIG_PATH = SRC_TAURI_DIR / "tauri.conf.json"
 CARGO_TOML_PATH = SRC_TAURI_DIR / "Cargo.toml"
 BACKEND_VERSION_PATH = ROOT / "backend" / "version.py"
 REMOTE_URL = "https://github.com/mucahitfezabektas/FLEXBOX.git"
-SIDE_CAR_NAME = "uniframe-backend"
+SIDE_CAR_NAME = "flexbox-backend"
 VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build and publish the UniFrame desktop release.")
+    parser = argparse.ArgumentParser(description="Build and publish the FLEXBOX desktop release.")
     parser.add_argument(
         "--version",
         help="Override version-settings.json and persist the supplied semantic version before the build starts.",
@@ -331,7 +331,7 @@ def commit_and_push(installer_path: Path) -> None:
 
     if status:
         run(["git", "add", "."])
-        run(["git", "commit", "-m", f"Build UniFrame release with {installer_path.name}"], check=False)
+        run(["git", "commit", "-m", f"Build FLEXBOX release with {installer_path.name}"], check=False)
 
     run(["git", "push", "-u", "origin", "main"])
 

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capability set for the UniFrame main window.",
+  "description": "Default capability set for the FLEXBOX main window.",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -17,7 +17,7 @@
       "identifier": "shell:allow-spawn",
       "allow": [
         {
-          "name": "binaries/uniframe-backend",
+          "name": "binaries/flexbox-backend",
           "sidecar": true
         }
       ]

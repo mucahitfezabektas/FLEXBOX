@@ -277,7 +277,7 @@
       </div>
       <div class="min-w-0">
         <p class="truncate text-sm font-semibold text-enterprise-text-primary">
-          {systemContext?.application ?? 'UniFrame Unified Framework'}
+          {systemContext?.application ?? 'FLEXBOX'}
         </p>
         <p class="truncate text-data-xs text-enterprise-text-muted">
           Modular desktop shell for integrated subsystems
@@ -351,7 +351,7 @@
           <div class="surface-panel w-full max-w-4xl rounded-md p-6 shadow-window">
             <p class="text-data-xs font-semibold uppercase tracking-[0.2em] text-enterprise-text-muted">Workspace</p>
             <h1 class="mt-2 text-2xl font-semibold tracking-tight text-enterprise-text-primary">
-              Unified Framework App
+              FLEXBOX
             </h1>
             <p class="mt-3 max-w-2xl text-sm leading-6 text-enterprise-text-secondary">
               Calisma alanini baslatmak icin bir modul acin. Shell; pencere yonetimi, taskbar, oturum geri yukleme

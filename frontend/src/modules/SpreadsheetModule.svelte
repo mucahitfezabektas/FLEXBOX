@@ -247,9 +247,9 @@
               <div class="sticky left-0 z-20 flex h-7 items-center border-r border-slate-200 bg-inherit px-2 py-1 font-mono text-[11px] text-slate-500">
                 {rowIndex + 1}
               </div>
-              {#each Array.from({ length: spreadsheetState.totalCols }) as _, colIndex}
+              {#each row as cell, colIndex}
                 <div class="flex h-7 min-w-0 items-center border-r border-slate-100 px-2 py-1 font-mono text-xs text-slate-700">
-                  <span class="block truncate" title={row[colIndex] ?? ''}>{formatCellValue(row[colIndex])}</span>
+                  <span class="block truncate" title={cell ?? ''}>{formatCellValue(cell)}</span>
                 </div>
               {/each}
             </div>

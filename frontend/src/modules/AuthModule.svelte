@@ -9,7 +9,7 @@
   };
 
   let username = $state('admin');
-  let password = $state('uniframe');
+  let password = $state('flexbox');
   let loading = $state(false);
   let response = $state<LoginResponse | null>(null);
   let errorMessage = $state('');
@@ -92,14 +92,14 @@
         <input
           class="enterprise-input rounded-md px-4 py-3 text-sm"
           bind:value={password}
-          placeholder="uniframe"
+          placeholder="flexbox"
           type="password"
         />
       </label>
 
       <div class="rounded-md border border-enterprise-border-strong bg-white/76 px-4 py-3 text-data-sm text-enterprise-text-muted shadow-enterprise">
         Varsayilan test hesabi:
-        <span class="data-code ml-1 font-medium text-enterprise-text-secondary">admin / uniframe</span>
+        <span class="data-code ml-1 font-medium text-enterprise-text-secondary">admin / flexbox</span>
       </div>
 
       <div class="flex flex-wrap gap-2">
