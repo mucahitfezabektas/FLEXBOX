@@ -67,7 +67,7 @@ def hash_password(password: str, salt: str, iterations: int = AUTH_ITERATIONS) -
 def build_default_auth_config() -> dict:
     salt = secrets.token_hex(16)
     return {
-        "environment": os.getenv("UNIFRAME_ENV", "DEV"),
+        "environment": os.getenv("FLEXBOX_ENV", "DEV"),
         "auth_mode": "local-config",
         "users": [
             {

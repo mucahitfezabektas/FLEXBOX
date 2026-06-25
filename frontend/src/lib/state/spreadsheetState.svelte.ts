@@ -1,21 +1,37 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 
-export interface SpreadsheetLoadResult {
-  file_name: string;
-  sheet_name: string;
+export interface SpreadsheetSheetSummary {
+  name: string;
   total_rows: number;
   total_cols: number;
 }
 
+export interface SpreadsheetLoadResult {
+  file_name: string;
+  active_sheet_index: number;
+  sheet_name: string;
+  total_rows: number;
+  total_cols: number;
+  sheets: SpreadsheetSheetSummary[];
+}
+
 export interface SpreadsheetChunkResponse {
   start_row: number;
-  limit: number;
+  row_limit: number;
+  start_col: number;
+  col_limit: number;
   total_rows: number;
   total_cols: number;
   rows: string[][];
 }
 
-export interface SpreadsheetVirtualWindow {
+export interface SpreadsheetSearchMatch {
+  row: number;
+  col: number;
+  value: string;
+}
+
+export interface SpreadsheetVerticalWindow {
   visibleStartRow: number;
   visibleEndRow: number;
   requestStartRow: number;
@@ -23,11 +39,33 @@ export interface SpreadsheetVirtualWindow {
   topSpacerHeight: number;
   bottomSpacerHeight: number;
   visibleRowCount: number;
-  overscanRows: number;
+}
+
+export interface SpreadsheetHorizontalWindow {
+  visibleStartCol: number;
+  visibleEndCol: number;
+  requestStartCol: number;
+  requestLimit: number;
+  leftSpacerWidth: number;
+  rightSpacerWidth: number;
+  visibleColCount: number;
 }
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
+}
+
+function excelColumnLabel(index: number) {
+  let value = index;
+  let label = '';
+
+  while (value > 0) {
+    const remainder = (value - 1) % 26;
+    label = String.fromCharCode(65 + remainder) + label;
+    value = Math.floor((value - 1) / 26);
+  }
+
+  return label;
 }
 
 function canInvokeTauriCommand() {
@@ -46,20 +84,22 @@ function canInvokeTauriCommand() {
 
 async function invokeTauriCommand<T>(command: string, args?: Record<string, unknown>) {
   if (!canInvokeTauriCommand()) {
-    throw new Error('Excel loading requires the Tauri desktop runtime. Open the app with `python run.py` or a Tauri bundle.');
+    throw new Error(
+      'Excel loading requires the Tauri desktop runtime. Open the app with `python run.py` or a Tauri bundle.'
+    );
   }
 
   return invoke<T>(command, args);
 }
 
-function computeVirtualWindow(
+function computeVerticalWindow(
   scrollTop: number,
   viewportHeight: number,
   totalRows: number,
   rowHeight: number,
   overscanRows: number,
-  chunkSize: number
-): SpreadsheetVirtualWindow {
+  rowChunkSize: number
+): SpreadsheetVerticalWindow {
   if (totalRows <= 0 || rowHeight <= 0) {
     return {
       visibleStartRow: 0,
@@ -68,30 +108,69 @@ function computeVirtualWindow(
       requestLimit: 0,
       topSpacerHeight: 0,
       bottomSpacerHeight: 0,
-      visibleRowCount: 0,
-      overscanRows
+      visibleRowCount: 0
     };
   }
 
   const visibleRowCount = Math.max(1, Math.ceil(viewportHeight / rowHeight));
-  const rawFirstVisibleRow = Math.floor(scrollTop / rowHeight);
-  const visibleStartRow = clamp(rawFirstVisibleRow, 0, Math.max(totalRows - 1, 0));
-  const visibleEndRow = clamp(visibleStartRow + visibleRowCount, 0, totalRows);
-  const bufferedStartRow = clamp(visibleStartRow - overscanRows, 0, totalRows);
+  const firstVisibleRow = clamp(Math.floor(scrollTop / rowHeight), 0, Math.max(totalRows - 1, 0));
+  const visibleEndRow = clamp(firstVisibleRow + visibleRowCount, 0, totalRows);
+  const bufferedStartRow = clamp(firstVisibleRow - overscanRows, 0, totalRows);
   const bufferedEndRow = clamp(visibleEndRow + overscanRows, bufferedStartRow, totalRows);
-  const requestStartRow = Math.floor(bufferedStartRow / chunkSize) * chunkSize;
-  const requestEndRow = Math.ceil(bufferedEndRow / chunkSize) * chunkSize;
+  const requestStartRow = Math.floor(bufferedStartRow / rowChunkSize) * rowChunkSize;
+  const requestEndRow = Math.ceil(bufferedEndRow / rowChunkSize) * rowChunkSize;
   const requestLimit = clamp(requestEndRow - requestStartRow, 0, totalRows - requestStartRow);
 
   return {
-    visibleStartRow,
+    visibleStartRow: firstVisibleRow,
     visibleEndRow,
     requestStartRow,
     requestLimit,
     topSpacerHeight: requestStartRow * rowHeight,
     bottomSpacerHeight: Math.max(0, (totalRows - (requestStartRow + requestLimit)) * rowHeight),
-    visibleRowCount,
-    overscanRows
+    visibleRowCount
+  };
+}
+
+function computeHorizontalWindow(
+  scrollLeft: number,
+  viewportWidth: number,
+  rowHeaderWidth: number,
+  totalCols: number,
+  columnWidth: number,
+  overscanCols: number,
+  columnChunkSize: number
+): SpreadsheetHorizontalWindow {
+  if (totalCols <= 0 || columnWidth <= 0) {
+    return {
+      visibleStartCol: 0,
+      visibleEndCol: 0,
+      requestStartCol: 0,
+      requestLimit: 0,
+      leftSpacerWidth: 0,
+      rightSpacerWidth: 0,
+      visibleColCount: 0
+    };
+  }
+
+  const usableViewportWidth = Math.max(columnWidth, viewportWidth - rowHeaderWidth);
+  const visibleColCount = Math.max(1, Math.ceil(usableViewportWidth / columnWidth));
+  const firstVisibleCol = clamp(Math.floor(scrollLeft / columnWidth), 0, Math.max(totalCols - 1, 0));
+  const visibleEndCol = clamp(firstVisibleCol + visibleColCount, 0, totalCols);
+  const bufferedStartCol = clamp(firstVisibleCol - overscanCols, 0, totalCols);
+  const bufferedEndCol = clamp(visibleEndCol + overscanCols, bufferedStartCol, totalCols);
+  const requestStartCol = Math.floor(bufferedStartCol / columnChunkSize) * columnChunkSize;
+  const requestEndCol = Math.ceil(bufferedEndCol / columnChunkSize) * columnChunkSize;
+  const requestLimit = clamp(requestEndCol - requestStartCol, 0, totalCols - requestStartCol);
+
+  return {
+    visibleStartCol: firstVisibleCol,
+    visibleEndCol,
+    requestStartCol,
+    requestLimit,
+    leftSpacerWidth: requestStartCol * columnWidth,
+    rightSpacerWidth: Math.max(0, (totalCols - (requestStartCol + requestLimit)) * columnWidth),
+    visibleColCount
   };
 }
 
@@ -99,41 +178,66 @@ class SpreadsheetState {
   filePath = $state('');
   fileName = $state('');
   sheetName = $state('');
+  sheets = $state<SpreadsheetSheetSummary[]>([]);
+  activeSheetIndex = $state(0);
   totalRows = $state(0);
   totalCols = $state(0);
   scrollTop = $state(0);
+  scrollLeft = $state(0);
   viewportHeight = $state(0);
   viewportWidth = $state(0);
   rowHeight = $state(28);
-  chunkSize = $state(128);
+  columnWidth = $state(144);
+  rowHeaderWidth = $state(72);
+  rowChunkSize = $state(128);
+  columnChunkSize = $state(8);
   overscanRows = $state(24);
+  overscanCols = $state(3);
   isLoading = $state(false);
+  isSearching = $state(false);
   loadError = $state<string | null>(null);
   selectedRow = $state<number | null>(null);
+  selectedCol = $state<number | null>(null);
+  searchQuery = $state('');
+  searchResults = $state<SpreadsheetSearchMatch[]>([]);
   activePacket = $state<SpreadsheetChunkResponse | null>(null);
   lastLoadedKey = $state('');
 
   private syncScheduled = false;
   private requestToken = 0;
   private readonly chunkCache = new Map<string, SpreadsheetChunkResponse>();
-  private readonly maxCacheEntries = 6;
+  private readonly maxCacheEntries = 8;
 
   activeRows = $derived(this.activePacket?.rows ?? []);
   totalContentHeight = $derived(this.totalRows * this.rowHeight);
-  visibleRowCount = $derived(
-    Math.max(1, this.viewportHeight > 0 ? Math.ceil(this.viewportHeight / this.rowHeight) : 1)
-  );
-  virtualWindow = $derived.by(() =>
-    computeVirtualWindow(
+  totalContentWidth = $derived(this.totalCols * this.columnWidth);
+  verticalWindow = $derived.by(() =>
+    computeVerticalWindow(
       this.scrollTop,
       this.viewportHeight,
       this.totalRows,
       this.rowHeight,
       this.overscanRows,
-      this.chunkSize
+      this.rowChunkSize
     )
   );
-  hasWorkbook = $derived(this.fileName.length > 0);
+  horizontalWindow = $derived.by(() =>
+    computeHorizontalWindow(
+      this.scrollLeft,
+      this.viewportWidth,
+      this.rowHeaderWidth,
+      this.totalCols,
+      this.columnWidth,
+      this.overscanCols,
+      this.columnChunkSize
+    )
+  );
+  hasWorkbook = $derived(this.fileName.length > 0 && this.sheets.length > 0);
+  visibleColumnLabels = $derived.by(() =>
+    Array.from({ length: this.activePacket?.col_limit ?? 0 }, (_, offset) =>
+      excelColumnLabel((this.activePacket?.start_col ?? 0) + offset + 1)
+    )
+  );
   statusLabel = $derived(
     this.isLoading ? 'Loading' : this.loadError ? 'Error' : this.hasWorkbook ? 'Ready' : 'Idle'
   );
@@ -144,24 +248,29 @@ class SpreadsheetState {
     void this.scheduleViewportSync();
   }
 
-  setScrollTop(scrollTop: number) {
-    const normalizedScrollTop = Math.max(0, Math.floor(scrollTop));
+  setScrollOffsets(scrollTop: number, scrollLeft: number) {
+    const nextTop = Math.max(0, Math.floor(scrollTop));
+    const nextLeft = Math.max(0, Math.floor(scrollLeft));
 
-    if (normalizedScrollTop === this.scrollTop) {
+    if (nextTop === this.scrollTop && nextLeft === this.scrollLeft) {
       return;
     }
 
-    this.scrollTop = normalizedScrollTop;
+    this.scrollTop = nextTop;
+    this.scrollLeft = nextLeft;
     void this.scheduleViewportSync();
   }
 
-  setSelectedRow(rowIndex: number | null) {
+  setSelectedCell(rowIndex: number | null, colIndex: number | null) {
     this.selectedRow = rowIndex;
+    this.selectedCol = colIndex;
   }
 
   resetViewport() {
     this.scrollTop = 0;
+    this.scrollLeft = 0;
     this.selectedRow = null;
+    this.selectedCol = null;
     void this.scheduleViewportSync();
   }
 
@@ -182,27 +291,38 @@ class SpreadsheetState {
       });
 
       this.filePath = normalizedPath;
-      this.fileName = result.file_name;
-      this.sheetName = result.sheet_name;
-      this.totalRows = result.total_rows;
-      this.totalCols = result.total_cols;
-      this.scrollTop = 0;
-      this.selectedRow = null;
-      this.activePacket = null;
-      this.lastLoadedKey = '';
-      this.chunkCache.clear();
+      this.applyWorkbookResult(result);
+      this.resetWorkbookViewportState();
       await this.syncViewportChunk(true);
-
       return result;
     } catch (error) {
-      this.activePacket = null;
-      this.filePath = normalizedPath;
-      this.fileName = '';
-      this.sheetName = '';
-      this.totalRows = 0;
-      this.totalCols = 0;
-      this.lastLoadedKey = '';
+      this.clearWorkbookState(normalizedPath);
       this.loadError = error instanceof Error ? error.message : 'Excel file could not be loaded.';
+      return null;
+    } finally {
+      this.isLoading = false;
+    }
+  }
+
+  async activateSheet(sheetIndex: number) {
+    if (!this.hasWorkbook || sheetIndex === this.activeSheetIndex) {
+      return null;
+    }
+
+    this.isLoading = true;
+    this.loadError = null;
+
+    try {
+      const result = await invokeTauriCommand<SpreadsheetLoadResult>('set_active_sheet', {
+        sheetIndex
+      });
+
+      this.applyWorkbookResult(result);
+      this.resetWorkbookViewportState();
+      await this.syncViewportChunk(true);
+      return result;
+    } catch (error) {
+      this.loadError = error instanceof Error ? error.message : 'Worksheet could not be activated.';
       return null;
     } finally {
       this.isLoading = false;
@@ -211,6 +331,91 @@ class SpreadsheetState {
 
   async reloadVisibleChunk() {
     await this.syncViewportChunk(true);
+  }
+
+  async searchWorkbook(query: string) {
+    this.searchQuery = query;
+    const normalizedQuery = query.trim();
+
+    if (!this.hasWorkbook || normalizedQuery.length === 0) {
+      this.searchResults = [];
+      return [];
+    }
+
+    this.isSearching = true;
+    this.loadError = null;
+
+    try {
+      const results = await invokeTauriCommand<SpreadsheetSearchMatch[]>('find_in_active_sheet', {
+        query: normalizedQuery,
+        limit: 40
+      });
+
+      this.searchResults = results;
+      return results;
+    } catch (error) {
+      this.loadError = error instanceof Error ? error.message : 'Workbook search could not be completed.';
+      return [];
+    } finally {
+      this.isSearching = false;
+    }
+  }
+
+  focusCell(rowIndex: number, colIndex: number) {
+    const clampedRow = clamp(rowIndex, 0, Math.max(this.totalRows - 1, 0));
+    const clampedCol = clamp(colIndex, 0, Math.max(this.totalCols - 1, 0));
+
+    this.selectedRow = clampedRow;
+    this.selectedCol = clampedCol;
+    this.scrollTop = clampedRow * this.rowHeight;
+    this.scrollLeft = clampedCol * this.columnWidth;
+    void this.scheduleViewportSync();
+  }
+
+  goToRow(rowNumber: number) {
+    const targetRow = clamp(Math.floor(rowNumber) - 1, 0, Math.max(this.totalRows - 1, 0));
+    this.selectedRow = targetRow;
+    this.scrollTop = targetRow * this.rowHeight;
+    void this.scheduleViewportSync();
+    return targetRow;
+  }
+
+  private applyWorkbookResult(result: SpreadsheetLoadResult) {
+    this.fileName = result.file_name;
+    this.sheetName = result.sheet_name;
+    this.sheets = result.sheets;
+    this.activeSheetIndex = result.active_sheet_index;
+    this.totalRows = result.total_rows;
+    this.totalCols = result.total_cols;
+  }
+
+  private resetWorkbookViewportState() {
+    this.scrollTop = 0;
+    this.scrollLeft = 0;
+    this.selectedRow = null;
+    this.selectedCol = null;
+    this.searchResults = [];
+    this.activePacket = null;
+    this.lastLoadedKey = '';
+    this.chunkCache.clear();
+  }
+
+  private clearWorkbookState(filePath = '') {
+    this.filePath = filePath;
+    this.fileName = '';
+    this.sheetName = '';
+    this.sheets = [];
+    this.activeSheetIndex = 0;
+    this.totalRows = 0;
+    this.totalCols = 0;
+    this.scrollTop = 0;
+    this.scrollLeft = 0;
+    this.selectedRow = null;
+    this.selectedCol = null;
+    this.searchResults = [];
+    this.activePacket = null;
+    this.lastLoadedKey = '';
+    this.chunkCache.clear();
   }
 
   private async scheduleViewportSync() {
@@ -231,12 +436,18 @@ class SpreadsheetState {
     });
   }
 
-  private buildCacheKey(startRow: number, limit: number) {
-    return `${startRow}:${limit}`;
+  private buildCacheKey(startRow: number, rowLimit: number, startCol: number, colLimit: number) {
+    return `${startRow}:${rowLimit}:${startCol}:${colLimit}`;
   }
 
   private rememberChunk(chunk: SpreadsheetChunkResponse) {
-    const key = this.buildCacheKey(chunk.start_row, chunk.limit);
+    const key = this.buildCacheKey(
+      chunk.start_row,
+      chunk.row_limit,
+      chunk.start_col,
+      chunk.col_limit
+    );
+
     this.chunkCache.set(key, chunk);
     this.lastLoadedKey = key;
 
@@ -250,8 +461,8 @@ class SpreadsheetState {
     }
   }
 
-  private getCachedChunk(startRow: number, limit: number) {
-    const key = this.buildCacheKey(startRow, limit);
+  private getCachedChunk(startRow: number, rowLimit: number, startCol: number, colLimit: number) {
+    const key = this.buildCacheKey(startRow, rowLimit, startCol, colLimit);
     const cached = this.chunkCache.get(key);
 
     if (!cached) {
@@ -263,32 +474,41 @@ class SpreadsheetState {
   }
 
   private async syncViewportChunk(forceFetch: boolean) {
-    if (!this.hasWorkbook || this.totalRows <= 0) {
+    if (!this.hasWorkbook || this.totalRows <= 0 || this.totalCols <= 0) {
       this.activePacket = null;
       return;
     }
 
-    const window = this.virtualWindow;
-    if (window.requestLimit <= 0) {
+    const verticalWindow = this.verticalWindow;
+    const horizontalWindow = this.horizontalWindow;
+
+    if (verticalWindow.requestLimit <= 0 || horizontalWindow.requestLimit <= 0) {
       this.activePacket = null;
       return;
     }
 
-    const cachedChunk = this.getCachedChunk(window.requestStartRow, window.requestLimit);
+    const cachedChunk = this.getCachedChunk(
+      verticalWindow.requestStartRow,
+      verticalWindow.requestLimit,
+      horizontalWindow.requestStartCol,
+      horizontalWindow.requestLimit
+    );
+
     if (cachedChunk && !forceFetch) {
       this.activePacket = cachedChunk;
       this.loadError = null;
       return;
     }
 
-    const cacheKey = this.buildCacheKey(window.requestStartRow, window.requestLimit);
     const token = ++this.requestToken;
     this.isLoading = true;
 
     try {
       const chunk = await invokeTauriCommand<SpreadsheetChunkResponse>('get_data_chunk', {
-        startRow: window.requestStartRow,
-        limit: window.requestLimit
+        startRow: verticalWindow.requestStartRow,
+        rowLimit: verticalWindow.requestLimit,
+        startCol: horizontalWindow.requestStartCol,
+        colLimit: horizontalWindow.requestLimit
       });
 
       if (token !== this.requestToken) {
@@ -300,7 +520,6 @@ class SpreadsheetState {
       this.totalRows = chunk.total_rows;
       this.totalCols = chunk.total_cols;
       this.loadError = null;
-      this.lastLoadedKey = cacheKey;
     } catch (error) {
       if (token !== this.requestToken) {
         return;

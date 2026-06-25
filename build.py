@@ -252,11 +252,29 @@ def build_tauri() -> Path:
     run([npm_command, "run", "tauri:build"])
 
     nsis_dir = SRC_TAURI_DIR / "target" / "release" / "bundle" / "nsis"
-    installers = sorted(nsis_dir.glob("*-setup.exe"))
-    if not installers:
+    tauri_payload = read_json(TAURI_CONFIG_PATH)
+    product_name = str(tauri_payload.get("productName", "")).strip()
+    product_prefix = f"{product_name}_"
+    all_installers = sorted(nsis_dir.glob("*-setup.exe"))
+    if not all_installers:
         raise FileNotFoundError(f"NSIS installer not found in {nsis_dir}")
 
-    return installers[-1]
+    installers = [
+        installer for installer in all_installers if not product_name or installer.name.startswith(product_prefix)
+    ]
+
+    if product_name and not installers:
+        discovered_names = ", ".join(installer.name for installer in all_installers)
+        raise FileNotFoundError(
+            f"Expected a '{product_name}' NSIS installer in {nsis_dir}, but found: {discovered_names}"
+        )
+
+    if not installers:
+        installers = all_installers
+
+    selected_installer = max(installers, key=lambda installer: installer.stat().st_mtime)
+    print(f"Selected installer: {selected_installer.name}")
+    return selected_installer
 
 
 def prepare_release_artifact(installer: Path) -> Path:

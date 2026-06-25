@@ -5,8 +5,8 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     fs,
     path::{Path, PathBuf},
-    thread,
     sync::{Arc, Mutex},
+    thread,
     time::Duration,
 };
 use tauri::Manager;
@@ -26,14 +26,19 @@ struct BackendSidecarRuntime {
 
 struct SpreadsheetState(Arc<Mutex<SpreadsheetRuntime>>);
 
+struct SheetRuntime {
+    name: String,
+    range: Range<Data>,
+    total_rows: usize,
+    total_cols: usize,
+}
+
 #[derive(Default)]
 struct SpreadsheetRuntime {
     file_path: Option<String>,
     file_name: Option<String>,
-    sheet_name: Option<String>,
-    sheet_range: Option<Range<Data>>,
-    total_rows: usize,
-    total_cols: usize,
+    sheets: Vec<SheetRuntime>,
+    active_sheet_index: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -47,28 +52,43 @@ struct WorkspaceSessionPayload {
 }
 
 #[derive(Debug, Serialize)]
-struct SpreadsheetLoadResult {
-    file_name: String,
-    sheet_name: String,
+struct SpreadsheetSheetSummary {
+    name: String,
     total_rows: usize,
     total_cols: usize,
 }
 
 #[derive(Debug, Serialize)]
+struct SpreadsheetLoadResult {
+    file_name: String,
+    active_sheet_index: usize,
+    sheet_name: String,
+    total_rows: usize,
+    total_cols: usize,
+    sheets: Vec<SpreadsheetSheetSummary>,
+}
+
+#[derive(Debug, Serialize)]
 struct SpreadsheetChunkResponse {
     start_row: usize,
-    limit: usize,
+    row_limit: usize,
+    start_col: usize,
+    col_limit: usize,
     total_rows: usize,
     total_cols: usize,
     rows: Vec<Vec<String>>,
 }
 
-struct LoadedSheet {
+#[derive(Debug, Serialize)]
+struct SpreadsheetSearchMatch {
+    row: usize,
+    col: usize,
+    value: String,
+}
+
+struct LoadedWorkbook {
     file_name: String,
-    sheet_name: String,
-    range: Range<Data>,
-    total_rows: usize,
-    total_cols: usize,
+    sheets: Vec<SheetRuntime>,
 }
 
 fn app_config_file_path(app: &tauri::AppHandle, file_name: &str) -> Result<PathBuf, String> {
@@ -164,6 +184,42 @@ fn serialize_cell(cell: &Data) -> String {
     }
 }
 
+impl SpreadsheetRuntime {
+    fn active_sheet(&self) -> Option<&SheetRuntime> {
+        self.sheets.get(self.active_sheet_index)
+    }
+}
+
+fn build_sheet_summaries(sheets: &[SheetRuntime]) -> Vec<SpreadsheetSheetSummary> {
+    sheets
+        .iter()
+        .map(|sheet| SpreadsheetSheetSummary {
+            name: sheet.name.clone(),
+            total_rows: sheet.total_rows,
+            total_cols: sheet.total_cols,
+        })
+        .collect()
+}
+
+fn build_load_result(
+    file_name: &str,
+    active_sheet_index: usize,
+    sheets: &[SheetRuntime],
+) -> Result<SpreadsheetLoadResult, String> {
+    let active_sheet = sheets
+        .get(active_sheet_index)
+        .ok_or_else(|| "workbook does not contain an active worksheet".to_string())?;
+
+    Ok(SpreadsheetLoadResult {
+        file_name: file_name.to_string(),
+        active_sheet_index,
+        sheet_name: active_sheet.name.clone(),
+        total_rows: active_sheet.total_rows,
+        total_cols: active_sheet.total_cols,
+        sheets: build_sheet_summaries(sheets),
+    })
+}
+
 #[tauri::command]
 async fn load_excel_file(
     state: tauri::State<'_, SpreadsheetState>,
@@ -175,96 +231,177 @@ async fn load_excel_file(
         return Err("selected Excel file does not exist".to_string());
     }
 
-    let loaded_sheet = tauri::async_runtime::spawn_blocking(move || -> Result<LoadedSheet, String> {
-        let mut workbook = open_workbook_auto(&workbook_path)
-            .map_err(|error| format!("failed to open Excel file: {error}"))?;
+    let loaded_workbook =
+        tauri::async_runtime::spawn_blocking(move || -> Result<LoadedWorkbook, String> {
+            let mut workbook = open_workbook_auto(&workbook_path)
+                .map_err(|error| format!("failed to open Excel file: {error}"))?;
 
-        let sheet_name = workbook
-            .sheet_names()
-            .first()
-            .cloned()
-            .ok_or_else(|| "workbook does not contain any worksheets".to_string())?;
+            let sheet_names = workbook.sheet_names().to_owned();
+            if sheet_names.is_empty() {
+                return Err("workbook does not contain any worksheets".to_string());
+            }
 
-        let range = workbook
-            .worksheet_range_at(0)
-            .ok_or_else(|| "failed to read first worksheet".to_string())?
-            .map_err(|error| format!("failed to parse worksheet: {error}"))?;
+            let mut sheets = Vec::with_capacity(sheet_names.len());
 
-        let (total_rows, total_cols) = range.get_size();
+            for (sheet_index, sheet_name) in sheet_names.into_iter().enumerate() {
+                let range = workbook
+                    .worksheet_range_at(sheet_index)
+                    .ok_or_else(|| format!("failed to read worksheet at index {sheet_index}"))?
+                    .map_err(|error| format!("failed to parse worksheet '{sheet_name}': {error}"))?;
+                let (total_rows, total_cols) = range.get_size();
 
-        Ok(LoadedSheet {
-            file_name: file_name_from_path(&workbook_path),
-            sheet_name,
-            range,
-            total_rows,
-            total_cols,
+                sheets.push(SheetRuntime {
+                    name: sheet_name,
+                    range,
+                    total_rows,
+                    total_cols,
+                });
+            }
+
+            Ok(LoadedWorkbook {
+                file_name: file_name_from_path(&workbook_path),
+                sheets,
+            })
         })
-    })
-    .await
-    .map_err(|error| format!("failed to join Excel loader: {error}"))??;
+        .await
+        .map_err(|error| format!("failed to join Excel loader: {error}"))??;
 
-    let result = SpreadsheetLoadResult {
-        file_name: loaded_sheet.file_name.clone(),
-        sheet_name: loaded_sheet.sheet_name.clone(),
-        total_rows: loaded_sheet.total_rows,
-        total_cols: loaded_sheet.total_cols,
-    };
+    let result = build_load_result(&loaded_workbook.file_name, 0, &loaded_workbook.sheets)?;
 
     let mut runtime = state
         .0
         .lock()
         .map_err(|_| "failed to acquire spreadsheet state".to_string())?;
     runtime.file_path = Some(path);
-    runtime.file_name = Some(loaded_sheet.file_name);
-    runtime.sheet_name = Some(loaded_sheet.sheet_name);
-    runtime.sheet_range = Some(loaded_sheet.range);
-    runtime.total_rows = loaded_sheet.total_rows;
-    runtime.total_cols = loaded_sheet.total_cols;
+    runtime.file_name = Some(loaded_workbook.file_name);
+    runtime.sheets = loaded_workbook.sheets;
+    runtime.active_sheet_index = 0;
 
     Ok(result)
 }
 
 #[tauri::command]
-fn get_data_chunk(
-    state: tauri::State<SpreadsheetState>,
-    start_row: usize,
+fn set_active_sheet(
+    state: tauri::State<'_, SpreadsheetState>,
+    sheet_index: usize,
+) -> Result<SpreadsheetLoadResult, String> {
+    let mut runtime = state
+        .0
+        .lock()
+        .map_err(|_| "failed to acquire spreadsheet state".to_string())?;
+
+    if runtime.sheets.is_empty() {
+        return Err("no Excel workbook has been loaded".to_string());
+    }
+
+    if sheet_index >= runtime.sheets.len() {
+        return Err("requested worksheet index is out of range".to_string());
+    }
+
+    runtime.active_sheet_index = sheet_index;
+    let file_name = runtime
+        .file_name
+        .clone()
+        .unwrap_or_else(|| "workbook.xlsx".to_string());
+
+    build_load_result(&file_name, runtime.active_sheet_index, &runtime.sheets)
+}
+
+#[tauri::command]
+fn find_in_active_sheet(
+    state: tauri::State<'_, SpreadsheetState>,
+    query: String,
     limit: usize,
+) -> Result<Vec<SpreadsheetSearchMatch>, String> {
+    let normalized_query = query.trim().to_lowercase();
+
+    if normalized_query.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let runtime = state
+        .0
+        .lock()
+        .map_err(|_| "failed to acquire spreadsheet state".to_string())?;
+    let sheet = runtime
+        .active_sheet()
+        .ok_or_else(|| "no Excel workbook has been loaded".to_string())?;
+    let result_limit = limit.clamp(1, 200);
+    let mut matches = Vec::with_capacity(result_limit);
+
+    for row_index in 0..sheet.total_rows {
+        for col_index in 0..sheet.total_cols {
+            let value = sheet
+                .range
+                .get((row_index, col_index))
+                .map(serialize_cell)
+                .unwrap_or_default();
+
+            if value.is_empty() || !value.to_lowercase().contains(&normalized_query) {
+                continue;
+            }
+
+            matches.push(SpreadsheetSearchMatch {
+                row: row_index,
+                col: col_index,
+                value,
+            });
+
+            if matches.len() >= result_limit {
+                return Ok(matches);
+            }
+        }
+    }
+
+    Ok(matches)
+}
+
+#[tauri::command]
+fn get_data_chunk(
+    state: tauri::State<'_, SpreadsheetState>,
+    start_row: usize,
+    row_limit: usize,
+    start_col: usize,
+    col_limit: usize,
 ) -> Result<SpreadsheetChunkResponse, String> {
     let runtime = state
         .0
         .lock()
         .map_err(|_| "failed to acquire spreadsheet state".to_string())?;
-
-    let sheet_range = runtime
-        .sheet_range
-        .as_ref()
+    let sheet = runtime
+        .active_sheet()
         .ok_or_else(|| "no Excel workbook has been loaded".to_string())?;
 
-    if runtime.total_rows == 0 || runtime.total_cols == 0 {
+    if sheet.total_rows == 0 || sheet.total_cols == 0 {
         return Ok(SpreadsheetChunkResponse {
             start_row: 0,
-            limit: 0,
-            total_rows: runtime.total_rows,
-            total_cols: runtime.total_cols,
+            row_limit: 0,
+            start_col: 0,
+            col_limit: 0,
+            total_rows: sheet.total_rows,
+            total_cols: sheet.total_cols,
             rows: Vec::new(),
         });
     }
 
-    if sheet_range.is_empty() {
+    if sheet.range.is_empty() {
         return Err("no Excel workbook has been loaded".to_string());
     }
 
-    let total_rows = runtime.total_rows.min(sheet_range.height());
-    let total_cols = runtime.total_cols;
+    let total_rows = sheet.total_rows;
+    let total_cols = sheet.total_cols;
     let start_row = start_row.min(total_rows);
-    let end_row = start_row.saturating_add(limit).min(total_rows);
+    let end_row = start_row.saturating_add(row_limit).min(total_rows);
+    let start_col = start_col.min(total_cols);
+    let end_col = start_col.saturating_add(col_limit).min(total_cols);
     let mut rows = Vec::with_capacity(end_row.saturating_sub(start_row));
 
     for row_index in start_row..end_row {
-        let mut row = Vec::with_capacity(total_cols);
+        let mut row = Vec::with_capacity(end_col.saturating_sub(start_col));
 
-        for col_index in 0..total_cols {
-            let value = sheet_range
+        for col_index in start_col..end_col {
+            let value = sheet
+                .range
                 .get((row_index, col_index))
                 .map(serialize_cell)
                 .unwrap_or_default();
@@ -276,7 +413,9 @@ fn get_data_chunk(
 
     Ok(SpreadsheetChunkResponse {
         start_row,
-        limit: end_row.saturating_sub(start_row),
+        row_limit: end_row.saturating_sub(start_row),
+        start_col,
+        col_limit: end_col.saturating_sub(start_col),
         total_rows,
         total_cols,
         rows,
@@ -400,6 +539,8 @@ fn main() {
             load_workspace_session,
             clear_workspace_session,
             load_excel_file,
+            set_active_sheet,
+            find_in_active_sheet,
             get_data_chunk
         ])
         .build(tauri::generate_context!())
