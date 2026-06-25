@@ -1,0 +1,16 @@
+.agents/
+node_modules/
+frontend/dist/
+frontend/src/**/*.js
+src-tauri/target/
+src-tauri/binaries/
+backend/.venv/
+backend/__pycache__/
+backend/*.pyc
+build/
+dist/
+vite.config.js
+tailwind.config.js
+__pycache__/
+.DS_Store
+*.spec
