@@ -425,6 +425,20 @@ class SpreadsheetState {
     });
   }
 
+  async setColumnSort(colIndex: number, direction: SpreadsheetSortDirection) {
+    return this.configureView({
+      sortCol: colIndex,
+      sortDirection: direction
+    });
+  }
+
+  async clearColumnSort() {
+    return this.configureView({
+      sortCol: null,
+      sortDirection: null
+    });
+  }
+
   async clearViewOptions() {
     return this.configureView({
       filterQuery: '',

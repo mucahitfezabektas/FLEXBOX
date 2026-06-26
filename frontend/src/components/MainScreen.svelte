@@ -120,6 +120,18 @@
     await syncShellFullscreenState();
   }
 
+  async function toggleDeveloperTools() {
+    if (!tauriWindowControls) {
+      return;
+    }
+
+    try {
+      await invoke('plugin:webview|internal_toggle_devtools');
+    } catch (error) {
+      console.warn('Developer tools could not be toggled.', error);
+    }
+  }
+
   async function startShellResize(direction: ResizeDirection, event: PointerEvent) {
     event.preventDefault();
     event.stopPropagation();
@@ -279,6 +291,12 @@
   }
 
   function handleGlobalKeydown(event: KeyboardEvent) {
+    if (event.key === 'F12' && !event.altKey && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
+      event.preventDefault();
+      void toggleDeveloperTools();
+      return;
+    }
+
     if (isTextEntryTarget(event.target)) {
       return;
     }
@@ -389,11 +407,11 @@
   onpointerleave={releaseShellHeader}
   role="application"
 >
-  <div class="shell-header-reveal-zone absolute inset-x-0 top-0 z-50 h-3" role="presentation"></div>
+  <div class="shell-header-reveal-zone absolute inset-x-0 top-0 z-[1200] h-3" role="presentation"></div>
 
   <div
     bind:this={shellHeaderElement}
-    class={`top-bar absolute inset-x-0 top-0 z-60 flex h-14 items-center gap-3 border-b px-3 transition-transform duration-200 ease-out ${
+    class={`top-bar absolute inset-x-0 top-0 z-[1300] flex h-14 items-center gap-3 border-b px-3 transition-transform duration-200 ease-out ${
       shellHeaderVisible || shellHeaderPinned ? 'translate-y-0' : '-translate-y-[calc(100%-4px)]'
     } ${shellHeaderVisible || shellHeaderPinned ? 'pointer-events-auto' : 'pointer-events-none'}`}
     onmouseenter={() => showShellHeader(true)}
@@ -649,12 +667,12 @@
     </div>
   </footer>
 
-  <div class="absolute inset-x-4 top-0 z-40 h-1.5 cursor-n-resize touch-none" onpointerdown={(event) => startShellResize('North', event)} role="presentation"></div>
-  <div class="absolute inset-x-4 bottom-0 z-40 h-1.5 cursor-s-resize touch-none" onpointerdown={(event) => startShellResize('South', event)} role="presentation"></div>
-  <div class="absolute inset-y-4 left-0 z-40 w-1.5 cursor-w-resize touch-none" onpointerdown={(event) => startShellResize('West', event)} role="presentation"></div>
-  <div class="absolute inset-y-4 right-0 z-40 w-1.5 cursor-e-resize touch-none" onpointerdown={(event) => startShellResize('East', event)} role="presentation"></div>
-  <div class="absolute left-0 top-0 z-40 h-4 w-4 cursor-nw-resize touch-none" onpointerdown={(event) => startShellResize('NorthWest', event)} role="presentation"></div>
-  <div class="absolute right-0 top-0 z-40 h-4 w-4 cursor-ne-resize touch-none" onpointerdown={(event) => startShellResize('NorthEast', event)} role="presentation"></div>
-  <div class="absolute bottom-0 left-0 z-40 h-4 w-4 cursor-sw-resize touch-none" onpointerdown={(event) => startShellResize('SouthWest', event)} role="presentation"></div>
-  <div class="absolute bottom-0 right-0 z-40 h-4 w-4 cursor-se-resize touch-none" onpointerdown={(event) => startShellResize('SouthEast', event)} role="presentation"></div>
+  <div class="absolute inset-x-4 top-0 z-[1100] h-1.5 cursor-n-resize touch-none" onpointerdown={(event) => startShellResize('North', event)} role="presentation"></div>
+  <div class="absolute inset-x-4 bottom-0 z-[1100] h-1.5 cursor-s-resize touch-none" onpointerdown={(event) => startShellResize('South', event)} role="presentation"></div>
+  <div class="absolute inset-y-4 left-0 z-[1100] w-1.5 cursor-w-resize touch-none" onpointerdown={(event) => startShellResize('West', event)} role="presentation"></div>
+  <div class="absolute inset-y-4 right-0 z-[1100] w-1.5 cursor-e-resize touch-none" onpointerdown={(event) => startShellResize('East', event)} role="presentation"></div>
+  <div class="absolute left-0 top-0 z-[1100] h-4 w-4 cursor-nw-resize touch-none" onpointerdown={(event) => startShellResize('NorthWest', event)} role="presentation"></div>
+  <div class="absolute right-0 top-0 z-[1100] h-4 w-4 cursor-ne-resize touch-none" onpointerdown={(event) => startShellResize('NorthEast', event)} role="presentation"></div>
+  <div class="absolute bottom-0 left-0 z-[1100] h-4 w-4 cursor-sw-resize touch-none" onpointerdown={(event) => startShellResize('SouthWest', event)} role="presentation"></div>
+  <div class="absolute bottom-0 right-0 z-[1100] h-4 w-4 cursor-se-resize touch-none" onpointerdown={(event) => startShellResize('SouthEast', event)} role="presentation"></div>
 </div>
