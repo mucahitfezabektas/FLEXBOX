@@ -225,6 +225,7 @@ class SpreadsheetState {
   searchResults = $state<SpreadsheetSearchMatch[]>([]);
   activePacket = $state<SpreadsheetChunkResponse | null>(null);
   lastLoadedKey = $state('');
+  cacheEntryCount = $state(0);
 
   private syncScheduled = false;
   private requestToken = 0;
@@ -675,6 +676,7 @@ class SpreadsheetState {
     this.activePacket = null;
     this.lastLoadedKey = '';
     this.chunkCache.clear();
+    this.cacheEntryCount = 0;
   }
 
   private clearWorkbookState(filePath = '') {
@@ -700,6 +702,7 @@ class SpreadsheetState {
     this.activePacket = null;
     this.lastLoadedKey = '';
     this.chunkCache.clear();
+    this.cacheEntryCount = 0;
   }
 
   private async configureView(config: {
@@ -777,6 +780,7 @@ class SpreadsheetState {
 
     this.chunkCache.set(key, chunk);
     this.lastLoadedKey = key;
+    this.cacheEntryCount = this.chunkCache.size;
 
     if (this.chunkCache.size <= this.maxCacheEntries) {
       return;
@@ -785,6 +789,7 @@ class SpreadsheetState {
     const oldestKey = this.chunkCache.keys().next().value as string | undefined;
     if (oldestKey) {
       this.chunkCache.delete(oldestKey);
+      this.cacheEntryCount = this.chunkCache.size;
     }
   }
 

@@ -18,16 +18,32 @@
     action?: (id: string) => void;
   };
 
+  type RecentSelection = {
+    key: string;
+    address: string;
+    sheetName: string;
+    displayRow: number;
+    sourceRow: number | null;
+    colIndex: number;
+    value: string;
+  };
+
   const isDesktopRuntime = isTauri();
   let filePathInput = $state('');
   let searchInput = $state('');
   let filterInput = $state('');
   let jumpToRowInput = $state('');
+  let jumpToColumnInput = $state('');
   let viewportElement = $state<HTMLDivElement | null>(null);
+  let filePathInputElement = $state<HTMLInputElement | null>(null);
+  let searchInputElement = $state<HTMLInputElement | null>(null);
+  let filterInputElement = $state<HTMLInputElement | null>(null);
+  let jumpToRowInputElement = $state<HTMLInputElement | null>(null);
   let viewportHeight = $state(0);
   let viewportWidth = $state(0);
   let showInspector = $state(true);
   let activeSearchIndex = $state(0);
+  let recentSelections = $state<RecentSelection[]>([]);
 
   const activeRows = $derived(spreadsheetState.activeRows);
   const activeSourceRows = $derived(spreadsheetState.activeSourceRows);
@@ -66,6 +82,109 @@
   const selectedColumnLabel = $derived(
     selectedCol !== null ? excelColumnLabel(selectedCol + 1) : '-'
   );
+  const selectedColumnHeader = $derived.by(() => {
+    if (selectedCol === null) {
+      return '-';
+    }
+
+    return activeColumnLabels[selectedCol - activeStartCol] ?? excelColumnLabel(selectedCol + 1);
+  });
+  const visibleChunkStats = $derived.by(() => {
+    let rowCount = activeRows.length;
+    let cellCount = 0;
+    let nonEmptyCells = 0;
+    let numericCells = 0;
+    let activeColumnFilled = 0;
+
+    for (const row of activeRows) {
+      cellCount += row.length;
+
+      row.forEach((cell, index) => {
+        const normalized = (cell ?? '').trim();
+        if (normalized.length === 0) {
+          return;
+        }
+
+        nonEmptyCells += 1;
+        if (isNumericCell(cell)) {
+          numericCells += 1;
+        }
+
+        if (selectedCol !== null && activeStartCol + index === selectedCol) {
+          activeColumnFilled += 1;
+        }
+      });
+    }
+
+    return {
+      rowCount,
+      cellCount,
+      nonEmptyCells,
+      numericCells,
+      activeColumnFilled
+    };
+  });
+  const activeColumnNumericStats = $derived.by(() => {
+    if (selectedCol === null) {
+      return null;
+    }
+
+    const columnOffset = selectedCol - activeStartCol;
+    if (columnOffset < 0 || columnOffset >= activeColLimit) {
+      return null;
+    }
+
+    const numericValues = activeRows
+      .map((row) => row[columnOffset] ?? '')
+      .map((value) => {
+        const normalized = value.trim();
+        if (!isNumericCell(normalized)) {
+          return null;
+        }
+
+        const parsed = Number.parseFloat(normalized.replace(',', '.'));
+        return Number.isFinite(parsed) ? parsed : null;
+      })
+      .filter((value): value is number => value !== null);
+
+    if (numericValues.length === 0) {
+      return null;
+    }
+
+    const sum = numericValues.reduce((accumulator, value) => accumulator + value, 0);
+    const min = Math.min(...numericValues);
+    const max = Math.max(...numericValues);
+
+    return {
+      count: numericValues.length,
+      sum,
+      min,
+      max,
+      avg: sum / numericValues.length
+    };
+  });
+  const selectedRowSnapshot = $derived.by(() => {
+    if (
+      !spreadsheetState.activePacket ||
+      selectedRow === null ||
+      selectedRow < spreadsheetState.activePacket.start_row ||
+      selectedRow >= spreadsheetState.activePacket.start_row + spreadsheetState.activePacket.row_limit
+    ) {
+      return [];
+    }
+
+    const rowOffset = selectedRow - spreadsheetState.activePacket.start_row;
+    const row = spreadsheetState.activePacket.rows[rowOffset] ?? [];
+    return row
+      .map((value, index) => ({
+        label:
+          spreadsheetState.activePacket?.headers[index]?.trim() ||
+          excelColumnLabel((spreadsheetState.activePacket?.start_col ?? 0) + index + 1),
+        value
+      }))
+      .filter((entry) => entry.value.trim().length > 0)
+      .slice(0, 8);
+  });
   const visibleRowRange = $derived.by(() => {
     if (!spreadsheetState.hasWorkbook || spreadsheetState.totalRows === 0) {
       return '0 - 0';
@@ -90,6 +209,53 @@
     );
     return `${excelColumnLabel(start)} - ${excelColumnLabel(end)}`;
   });
+  const viewportCoverage = $derived.by(() => {
+    const rowCoverage =
+      spreadsheetState.totalRows > 0
+        ? Math.min(
+            100,
+            (spreadsheetState.verticalWindow.visibleRowCount / spreadsheetState.totalRows) * 100
+          )
+        : 0;
+    const colCoverage =
+      spreadsheetState.totalCols > 0
+        ? Math.min(
+            100,
+            (spreadsheetState.horizontalWindow.visibleColCount / spreadsheetState.totalCols) * 100
+          )
+        : 0;
+
+    return {
+      rowCoverage,
+      colCoverage
+    };
+  });
+  const activeColumnSamples = $derived.by(() => {
+    if (selectedCol === null) {
+      return [];
+    }
+
+    const columnOffset = selectedCol - activeStartCol;
+    if (columnOffset < 0 || columnOffset >= activeColLimit) {
+      return [];
+    }
+
+    const sampleCounts = new Map<string, number>();
+
+    for (const row of activeRows) {
+      const normalized = (row[columnOffset] ?? '').trim();
+      if (!normalized) {
+        continue;
+      }
+
+      sampleCounts.set(normalized, (sampleCounts.get(normalized) ?? 0) + 1);
+    }
+
+    return Array.from(sampleCounts.entries())
+      .map(([value, count]) => ({ value, count }))
+      .sort((left, right) => right.count - left.count || left.value.localeCompare(right.value))
+      .slice(0, 8);
+  });
 
   function excelColumnLabel(index: number) {
     let value = index;
@@ -108,12 +274,26 @@
     return value.toLocaleString();
   }
 
+  function formatMetricValue(value: number) {
+    return Number.isInteger(value) ? value.toLocaleString() : value.toLocaleString(undefined, {
+      maximumFractionDigits: 2
+    });
+  }
+
+  function formatPercent(value: number) {
+    return `${value.toFixed(value >= 10 ? 1 : 2)}%`;
+  }
+
   function columnSortMarker(colIndex: number) {
     if (spreadsheetState.sortCol !== colIndex) {
       return '';
     }
 
     return spreadsheetState.sortDirection === 'desc' ? 'v' : '^';
+  }
+
+  function normalizedSearchQuery() {
+    return spreadsheetState.searchQuery.trim().toLowerCase();
   }
 
   function isNumericCell(value: string | undefined) {
@@ -124,6 +304,51 @@
   function formatCellValue(value: string | undefined) {
     const normalized = value ?? '';
     return normalized.length > 0 ? normalized : ' ';
+  }
+
+  function parseColumnInput(rawValue: string) {
+    const normalized = rawValue.trim().toUpperCase();
+    if (!normalized) {
+      return null;
+    }
+
+    if (/^\d+$/.test(normalized)) {
+      const numeric = Number.parseInt(normalized, 10);
+      return Number.isFinite(numeric) && numeric > 0 ? numeric - 1 : null;
+    }
+
+    if (!/^[A-Z]+$/.test(normalized)) {
+      return null;
+    }
+
+    let index = 0;
+    for (const character of normalized) {
+      index = index * 26 + (character.charCodeAt(0) - 64);
+    }
+
+    return index - 1;
+  }
+
+  function focusElement(target: HTMLInputElement | null) {
+    target?.focus();
+    target?.select();
+  }
+
+  function isSearchHighlighted(value: string | undefined) {
+    const query = normalizedSearchQuery();
+    if (!query) {
+      return false;
+    }
+
+    return (value ?? '').toLowerCase().includes(query);
+  }
+
+  function isActiveSearchCell(sourceRowIndex: number, colIndex: number) {
+    if (!activeSearchMatch) {
+      return false;
+    }
+
+    return activeSearchMatch.source_row === sourceRowIndex && activeSearchMatch.col === colIndex;
   }
 
   function syncViewportScroll() {
@@ -203,6 +428,16 @@
 
   function toggleInspectorPanel() {
     showInspector = !showInspector;
+  }
+
+  function goToFirstRow() {
+    spreadsheetState.goToRow(1);
+    syncViewportScroll();
+  }
+
+  function goToLastRow() {
+    spreadsheetState.goToRow(Math.max(spreadsheetState.totalRows, 1));
+    syncViewportScroll();
   }
 
   function handleScroll(event: Event) {
@@ -357,8 +592,68 @@
     syncViewportScroll();
   }
 
+  function goToVisibleColumn() {
+    const columnIndex = parseColumnInput(jumpToColumnInput);
+
+    if (columnIndex === null) {
+      return;
+    }
+
+    const targetRow = selectedRow ?? spreadsheetState.verticalWindow.visibleStartRow;
+    spreadsheetState.focusCell(
+      targetRow,
+      columnIndex,
+      spreadsheetState.resolveSourceRow(targetRow)
+    );
+    syncViewportScroll();
+  }
+
+  function scrubToRow(event: Event) {
+    const target = event.currentTarget as HTMLInputElement | null;
+    if (!target) {
+      return;
+    }
+
+    const rowNumber = Number.parseInt(target.value, 10);
+    if (Number.isNaN(rowNumber)) {
+      return;
+    }
+
+    spreadsheetState.goToRow(rowNumber);
+    syncViewportScroll();
+  }
+
+  function scrubToColumn(event: Event) {
+    const target = event.currentTarget as HTMLInputElement | null;
+    if (!target) {
+      return;
+    }
+
+    const colNumber = Number.parseInt(target.value, 10);
+    if (Number.isNaN(colNumber)) {
+      return;
+    }
+
+    const targetRow = selectedRow ?? spreadsheetState.verticalWindow.visibleStartRow;
+    spreadsheetState.focusCell(
+      targetRow,
+      Math.max(0, colNumber - 1),
+      spreadsheetState.resolveSourceRow(targetRow)
+    );
+    syncViewportScroll();
+  }
+
   function focusCell(displayRowIndex: number, colIndex: number, sourceRowIndex: number) {
     spreadsheetState.setSelectedCell(displayRowIndex, colIndex, sourceRowIndex);
+  }
+
+  function focusRecentSelection(item: RecentSelection) {
+    spreadsheetState.focusCell(
+      item.displayRow,
+      item.colIndex,
+      item.sourceRow
+    );
+    syncViewportScroll();
   }
 
   function setDensityMode(mode: SpreadsheetDensityMode) {
@@ -369,6 +664,25 @@
   function setColumnProfile(profile: SpreadsheetColumnProfile) {
     spreadsheetState.setColumnProfile(profile);
     syncViewportScroll();
+  }
+
+  async function copyVisibleChunk() {
+    const lines = activeRows.map((row) => row.map((cell) => cell ?? '').join('\t'));
+    await copyText(lines.join('\n'));
+  }
+
+  async function copySelectedColumnValues() {
+    if (selectedCol === null) {
+      return;
+    }
+
+    const columnOffset = selectedCol - activeStartCol;
+    if (columnOffset < 0 || columnOffset >= activeColLimit) {
+      return;
+    }
+
+    const values = activeRows.map((row) => row[columnOffset] ?? '');
+    await copyText(values.join('\n'));
   }
 
   async function copyText(value: string) {
@@ -427,6 +741,13 @@
         action: () => resetViewport()
       },
       {
+        text: 'Copy visible chunk',
+        enabled: activeRows.length > 0,
+        action: () => {
+          void copyVisibleChunk();
+        }
+      },
+      {
         text: spreadsheetState.headerRowEnabled ? 'Disable header row' : 'Use first row as headers',
         enabled: spreadsheetState.hasWorkbook,
         action: () => {
@@ -471,6 +792,16 @@
         action: () => {
           void copyText(label);
         }
+      },
+      {
+        text: 'Copy visible column values',
+        action: () => {
+          void copyText(
+            activeRows
+              .map((row) => row[colIndex - activeStartCol] ?? '')
+              .join('\n')
+          );
+        }
       }
     ]);
   }
@@ -504,6 +835,12 @@
       {
         text: 'Reset viewport',
         action: () => resetViewport()
+      },
+      {
+        text: 'Copy visible chunk',
+        action: () => {
+          void copyVisibleChunk();
+        }
       }
     ]);
   }
@@ -533,6 +870,13 @@
         text: `Copy row ${sourceRowIndex + 1}`,
         action: () => {
           void copyRowValues(row);
+        }
+      },
+      {
+        text: `Copy visible ${excelColumnLabel(colIndex + 1)} values`,
+        action: () => {
+          spreadsheetState.setSelectedCell(displayRowIndex, colIndex, sourceRowIndex);
+          void copySelectedColumnValues();
         }
       },
       {
@@ -573,6 +917,30 @@
 
   function handleViewportKeydown(event: KeyboardEvent) {
     if (!spreadsheetState.hasWorkbook) {
+      return;
+    }
+
+    if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'f') {
+      event.preventDefault();
+      focusElement(filterInputElement);
+      return;
+    }
+
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+      event.preventDefault();
+      focusElement(searchInputElement);
+      return;
+    }
+
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'g') {
+      event.preventDefault();
+      focusElement(jumpToRowInputElement);
+      return;
+    }
+
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'l') {
+      event.preventDefault();
+      focusElement(filePathInputElement);
       return;
     }
 
@@ -659,6 +1027,12 @@
   });
 
   $effect(() => {
+    if (selectedCol !== null) {
+      jumpToColumnInput = excelColumnLabel(selectedCol + 1);
+    }
+  });
+
+  $effect(() => {
     filterInput = spreadsheetState.filterQuery;
   });
 
@@ -666,6 +1040,31 @@
     if (activeSearchIndex >= spreadsheetState.searchResults.length) {
       activeSearchIndex = 0;
     }
+  });
+
+  $effect(() => {
+    if (
+      !spreadsheetState.hasWorkbook ||
+      selectedRow === null ||
+      selectedCol === null
+    ) {
+      return;
+    }
+
+    const entry: RecentSelection = {
+      key: `${spreadsheetState.sheetName}:${selectedAddress}`,
+      address: selectedAddress,
+      sheetName: spreadsheetState.sheetName || 'Sheet',
+      displayRow: selectedRow,
+      sourceRow: selectedSourceRow,
+      colIndex: selectedCol,
+      value: selectedValue
+    };
+
+    recentSelections = [
+      entry,
+      ...recentSelections.filter((item) => item.key !== entry.key)
+    ].slice(0, 10);
   });
 </script>
 
@@ -700,6 +1099,7 @@
 
     <div class="flex flex-wrap items-center gap-1 border-b px-2 py-1">
       <input
+        bind:this={filePathInputElement}
         bind:value={filePathInput}
         class="sheets-input h-8 min-w-[280px] flex-1 font-mono text-xs"
         placeholder="C:\\data\\large-workbook.xlsx"
@@ -786,6 +1186,7 @@
     <div class="flex flex-wrap items-center gap-1 px-2 py-1">
       <div class="flex min-w-[220px] flex-1 items-center gap-1">
         <input
+          bind:this={searchInputElement}
           bind:value={searchInput}
           class="sheets-input h-8 min-w-0 flex-1 font-mono text-xs"
           placeholder="Find in current view"
@@ -807,6 +1208,13 @@
         </button>
         <button
           class="sheets-button h-8 px-3 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+          onclick={clearSearch}
+          disabled={searchResultCount === 0 && searchInput.trim().length === 0}
+        >
+          Clear
+        </button>
+        <button
+          class="sheets-button h-8 px-3 text-xs disabled:cursor-not-allowed disabled:opacity-50"
           onclick={focusPreviousSearchResult}
           disabled={searchResultCount === 0}
         >
@@ -823,6 +1231,7 @@
 
       <div class="flex min-w-[260px] flex-[1.1] items-center gap-1">
         <input
+          bind:this={filterInputElement}
           bind:value={filterInput}
           class="sheets-input h-8 min-w-0 flex-1 font-mono text-xs"
           placeholder="Filter rows by text"
@@ -853,6 +1262,7 @@
 
       <div class="flex min-w-[150px] items-center gap-1">
         <input
+          bind:this={jumpToRowInputElement}
           bind:value={jumpToRowInput}
           class="sheets-input h-8 w-24 font-mono text-xs"
           placeholder="Row #"
@@ -871,6 +1281,53 @@
           disabled={!spreadsheetState.hasWorkbook}
         >
           Go
+        </button>
+      </div>
+
+      <div class="flex min-w-[170px] items-center gap-1">
+        <input
+          bind:value={jumpToColumnInput}
+          class="sheets-input h-8 w-24 font-mono text-xs uppercase"
+          placeholder="Col / AA"
+          spellcheck="false"
+          disabled={!spreadsheetState.hasWorkbook}
+          onkeydown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              goToVisibleColumn();
+            }
+          }}
+        />
+        <button
+          class="sheets-button h-8 px-3 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+          onclick={goToVisibleColumn}
+          disabled={!spreadsheetState.hasWorkbook}
+        >
+          Column
+        </button>
+      </div>
+
+      <div class="flex items-center gap-1">
+        <button
+          class="sheets-button h-8 px-3 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+          onclick={goToFirstRow}
+          disabled={!spreadsheetState.hasWorkbook}
+        >
+          Top
+        </button>
+        <button
+          class="sheets-button h-8 px-3 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+          onclick={goToLastRow}
+          disabled={!spreadsheetState.hasWorkbook}
+        >
+          Bottom
+        </button>
+        <button
+          class="sheets-button h-8 px-3 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+          onclick={() => void copyVisibleChunk()}
+          disabled={activeRows.length === 0}
+        >
+          Copy View
         </button>
       </div>
     </div>
@@ -976,6 +1433,200 @@
                 {spreadsheetState.headerRowEnabled ? 'Disable Header' : 'Enable Header'}
               </button>
             </div>
+          </div>
+
+          <div class="sheets-panel-section border-b px-3 py-3">
+            <div class="flex items-center justify-between gap-2">
+              <p class="sheets-section-label">Navigator</p>
+              <span class="font-mono text-[11px] text-[var(--sheet-muted)]">{selectedAddress}</span>
+            </div>
+
+            <div class="mt-3 rounded-sm border border-[var(--sheet-border)] bg-white/78 p-3">
+              <div class="flex items-center justify-between gap-2">
+                <span class="text-[11px] font-medium text-[var(--sheet-muted)]">Row sweep</span>
+                <span class="font-mono text-[11px] text-[var(--sheet-text)]">{selectedDisplayRowLabel}</span>
+              </div>
+              <input
+                class="sheets-range mt-3 w-full"
+                type="range"
+                min="1"
+                max={Math.max(1, spreadsheetState.totalRows)}
+                value={(selectedRow ?? spreadsheetState.verticalWindow.visibleStartRow) + 1}
+                oninput={scrubToRow}
+              />
+              <div class="mt-2 flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-[var(--sheet-muted)]">
+                <span>1</span>
+                <span>{toHumanCount(spreadsheetState.totalRows)}</span>
+              </div>
+            </div>
+
+            <div class="mt-3 rounded-sm border border-[var(--sheet-border)] bg-white/78 p-3">
+              <div class="flex items-center justify-between gap-2">
+                <span class="text-[11px] font-medium text-[var(--sheet-muted)]">Column sweep</span>
+                <span class="font-mono text-[11px] text-[var(--sheet-text)]">{selectedColumnLabel}</span>
+              </div>
+              <input
+                class="sheets-range mt-3 w-full"
+                type="range"
+                min="1"
+                max={Math.max(1, spreadsheetState.totalCols)}
+                value={(selectedCol ?? spreadsheetState.horizontalWindow.visibleStartCol) + 1}
+                oninput={scrubToColumn}
+              />
+              <div class="mt-2 flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-[var(--sheet-muted)]">
+                <span>A</span>
+                <span>{excelColumnLabel(Math.max(1, spreadsheetState.totalCols))}</span>
+              </div>
+            </div>
+
+            <div class="mt-3 grid grid-cols-2 gap-2">
+              <div class="sheets-metric-card min-h-[3.5rem]">
+                <span class="sheets-metric-label">Row coverage</span>
+                <span class="sheets-metric-value">{formatPercent(viewportCoverage.rowCoverage)}</span>
+              </div>
+              <div class="sheets-metric-card min-h-[3.5rem]">
+                <span class="sheets-metric-label">Col coverage</span>
+                <span class="sheets-metric-value">{formatPercent(viewportCoverage.colCoverage)}</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="sheets-panel-section border-b px-3 py-3">
+            <div class="flex items-center justify-between gap-2">
+              <p class="sheets-section-label">Visible Chunk</p>
+              <span class="font-mono text-[11px] text-[var(--sheet-muted)]">
+                {activeStartRow + 1}-{activeStartRow + activeRowLimit}
+              </span>
+            </div>
+            <div class="mt-3 grid grid-cols-2 gap-2">
+              <div class="sheets-metric-card">
+                <span class="sheets-metric-label">Rows</span>
+                <span class="sheets-metric-value">{visibleChunkStats.rowCount}</span>
+              </div>
+              <div class="sheets-metric-card">
+                <span class="sheets-metric-label">Cells</span>
+                <span class="sheets-metric-value">{visibleChunkStats.cellCount}</span>
+              </div>
+              <div class="sheets-metric-card">
+                <span class="sheets-metric-label">Filled</span>
+                <span class="sheets-metric-value">{visibleChunkStats.nonEmptyCells}</span>
+              </div>
+              <div class="sheets-metric-card">
+                <span class="sheets-metric-label">Numeric</span>
+                <span class="sheets-metric-value">{visibleChunkStats.numericCells}</span>
+              </div>
+            </div>
+            <div class="mt-3 rounded-sm border border-[var(--sheet-border)] bg-white/72 px-3 py-2 text-[11px] text-[var(--sheet-muted)]">
+              <div class="flex items-center justify-between gap-2">
+                <span>Active column</span>
+                <span class="font-mono text-[var(--sheet-text)]">{selectedColumnHeader}</span>
+              </div>
+              <div class="mt-1 flex items-center justify-between gap-2">
+                <span>Filled values in chunk</span>
+                <span class="font-mono text-[var(--sheet-text)]">{visibleChunkStats.activeColumnFilled}</span>
+              </div>
+            </div>
+            <div class="mt-3 flex gap-1">
+              <button class="sheets-button h-8 flex-1 px-3 text-xs" onclick={() => void copyVisibleChunk()} type="button">
+                Copy View
+              </button>
+              <button
+                class="sheets-button h-8 flex-1 px-3 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                onclick={() => void copySelectedColumnValues()}
+                disabled={selectedCol === null}
+                type="button"
+              >
+                Copy Column
+              </button>
+            </div>
+          </div>
+
+          <div class="sheets-panel-section border-b px-3 py-3">
+            <div class="flex items-center justify-between gap-2">
+              <p class="sheets-section-label">Active Column Stats</p>
+              <span class="sheets-panel-badge">{selectedColumnHeader}</span>
+            </div>
+            {#if activeColumnNumericStats}
+              <div class="mt-3 grid grid-cols-2 gap-2">
+                <div class="sheets-metric-card">
+                  <span class="sheets-metric-label">Count</span>
+                  <span class="sheets-metric-value">{activeColumnNumericStats.count}</span>
+                </div>
+                <div class="sheets-metric-card">
+                  <span class="sheets-metric-label">Average</span>
+                  <span class="sheets-metric-value">{formatMetricValue(activeColumnNumericStats.avg)}</span>
+                </div>
+                <div class="sheets-metric-card">
+                  <span class="sheets-metric-label">Min</span>
+                  <span class="sheets-metric-value">{formatMetricValue(activeColumnNumericStats.min)}</span>
+                </div>
+                <div class="sheets-metric-card">
+                  <span class="sheets-metric-label">Max</span>
+                  <span class="sheets-metric-value">{formatMetricValue(activeColumnNumericStats.max)}</span>
+                </div>
+              </div>
+              <div class="mt-3 rounded-sm border border-[var(--sheet-border)] bg-white/72 px-3 py-2 text-[11px] text-[var(--sheet-muted)]">
+                <div class="flex items-center justify-between gap-2">
+                  <span>Visible sum</span>
+                  <span class="font-mono text-[var(--sheet-text)]">{formatMetricValue(activeColumnNumericStats.sum)}</span>
+                </div>
+              </div>
+            {:else}
+              <p class="mt-3 text-[11px] leading-5 text-[var(--sheet-muted)]">
+                Active column has no numeric values inside the current viewport chunk.
+              </p>
+            {/if}
+          </div>
+
+          <div class="sheets-panel-section border-b px-3 py-3">
+            <div class="flex items-center justify-between gap-2">
+              <p class="sheets-section-label">Active Column Samples</p>
+              <span class="sheets-panel-badge">{selectedColumnHeader}</span>
+            </div>
+
+            {#if activeColumnSamples.length > 0}
+              <div class="mt-3 space-y-2">
+                {#each activeColumnSamples as sample}
+                  <div class="rounded-sm border border-[var(--sheet-border)] bg-white/78 px-3 py-2">
+                    <div class="flex items-center justify-between gap-2">
+                      <span class="truncate font-mono text-[11px] font-semibold text-[var(--sheet-text)]">
+                        {sample.value}
+                      </span>
+                      <span class="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--sheet-muted)]">
+                        {sample.count} hit
+                      </span>
+                    </div>
+                    <div class="mt-2 flex gap-1">
+                      <button
+                        class="sheets-button h-7 flex-1 px-2 text-[11px]"
+                        onclick={() => void runSearchForValue(sample.value)}
+                        type="button"
+                      >
+                        Find
+                      </button>
+                      <button
+                        class="sheets-button h-7 flex-1 px-2 text-[11px]"
+                        onclick={() => void applyFilterValue(sample.value)}
+                        type="button"
+                      >
+                        Filter
+                      </button>
+                      <button
+                        class="sheets-button h-7 px-2 text-[11px]"
+                        onclick={() => void copyText(sample.value)}
+                        type="button"
+                      >
+                        Copy
+                      </button>
+                    </div>
+                  </div>
+                {/each}
+              </div>
+            {:else}
+              <p class="mt-3 text-[11px] leading-5 text-[var(--sheet-muted)]">
+                Distinct sample values appear here for the active column inside the loaded viewport slice.
+              </p>
+            {/if}
           </div>
 
           <div class="sheets-panel-section border-b px-3 py-3">
@@ -1088,6 +1739,29 @@
                 {selectedValue || 'No active cell selected.'}
               </div>
             </div>
+            <div class="mt-3 rounded-sm border border-[var(--sheet-border)] bg-white/78 p-3">
+              <p class="mb-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--sheet-muted)]">
+                Row Snapshot
+              </p>
+              {#if selectedRowSnapshot.length > 0}
+                <div class="space-y-2">
+                  {#each selectedRowSnapshot as entry}
+                    <div class="rounded-sm border border-[var(--sheet-border)] bg-[var(--sheet-surface)] px-2 py-1.5">
+                      <div class="truncate text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--sheet-muted)]">
+                        {entry.label}
+                      </div>
+                      <div class="mt-1 truncate font-mono text-[11px] text-[var(--sheet-text)]">
+                        {entry.value}
+                      </div>
+                    </div>
+                  {/each}
+                </div>
+              {:else}
+                <p class="text-[11px] leading-5 text-[var(--sheet-muted)]">
+                  Current row has no non-empty cells inside the loaded viewport slice.
+                </p>
+              {/if}
+            </div>
             <div class="mt-3 flex gap-1">
               <button
                 class="sheets-button h-8 flex-1 px-3 text-xs disabled:cursor-not-allowed disabled:opacity-50"
@@ -1105,7 +1779,47 @@
               >
                 Find Value
               </button>
+              <button
+                class="sheets-button h-8 flex-1 px-3 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                onclick={() => void copySelectedColumnValues()}
+                disabled={selectedCol === null}
+                type="button"
+              >
+                Copy Column
+              </button>
             </div>
+          </div>
+
+          <div class="sheets-panel-section px-3 py-3">
+            <div class="flex items-center justify-between gap-2">
+              <p class="sheets-section-label">Recent Focus</p>
+              <span class="font-mono text-[11px] text-[var(--sheet-muted)]">
+                {recentSelections.length}
+              </span>
+            </div>
+            {#if recentSelections.length > 0}
+              <div class="mt-3 space-y-1">
+                {#each recentSelections as item}
+                  <button
+                    class="sheets-search-result-item"
+                    onclick={() => focusRecentSelection(item)}
+                    type="button"
+                  >
+                    <div class="flex items-center justify-between gap-2">
+                      <span class="font-mono text-[11px] font-semibold">{item.address}</span>
+                      <span class="text-[10px] uppercase tracking-[0.12em] text-[var(--sheet-muted)]">
+                        {item.sheetName}
+                      </span>
+                    </div>
+                    <span class="truncate font-mono text-[11px]">{item.value || '(empty)'}</span>
+                  </button>
+                {/each}
+              </div>
+            {:else}
+              <p class="mt-3 text-[11px] leading-5 text-[var(--sheet-muted)]">
+                Odaklanan hücreler burada birikir. Sık döndüğünüz alanlara hızlı geri sıçrayabilirsiniz.
+              </p>
+            {/if}
           </div>
         </aside>
       {/if}
@@ -1145,11 +1859,78 @@
             <span>Chunk rows {activeStartRow + 1} - {activeStartRow + activeRowLimit}</span>
             <span>Chunk cols {excelColumnLabel(activeStartCol + 1)} - {excelColumnLabel(activeStartCol + activeColLimit)}</span>
             <span>Matches {searchResultCount}</span>
-            <span>Keys Arrows / Tab / Enter / PgUp / PgDn / F3 / Ctrl+C</span>
+            <span>Keys Arrows / Tab / Enter / PgUp / PgDn / F3 / Ctrl+F / Ctrl+Shift+F / Ctrl+G / Ctrl+L / Ctrl+C</span>
           </div>
           {#if isWorkbookBusy}
             <span class="font-semibold text-[var(--sheet-accent-strong)]">Working...</span>
           {/if}
+        </div>
+
+        <div class="grid grid-cols-1 gap-2 border-b border-[var(--sheet-border)] bg-white/45 px-2 py-2 xl:grid-cols-[minmax(0,1fr)_18rem]">
+          <div class="rounded-sm border border-[var(--sheet-border)] bg-white/72 px-3 py-2">
+            <div class="flex items-center justify-between gap-2">
+              <div>
+                <p class="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--sheet-muted)]">
+                  Fast Navigator
+                </p>
+                <p class="mt-1 text-[11px] text-[var(--sheet-muted)]">
+                  Sweep across large row and column ranges without rebuilding the full dataset in the browser.
+                </p>
+              </div>
+              <span class="sheets-panel-badge">Viewport</span>
+            </div>
+            <div class="mt-3 grid gap-3 lg:grid-cols-2">
+              <label class="block">
+                <div class="mb-2 flex items-center justify-between gap-2 text-[11px]">
+                  <span class="font-medium text-[var(--sheet-muted)]">Rows</span>
+                  <span class="font-mono text-[var(--sheet-text)]">{visibleRowRange}</span>
+                </div>
+                <input
+                  class="sheets-range w-full"
+                  type="range"
+                  min="1"
+                  max={Math.max(1, spreadsheetState.totalRows)}
+                  value={(selectedRow ?? spreadsheetState.verticalWindow.visibleStartRow) + 1}
+                  oninput={scrubToRow}
+                />
+              </label>
+              <label class="block">
+                <div class="mb-2 flex items-center justify-between gap-2 text-[11px]">
+                  <span class="font-medium text-[var(--sheet-muted)]">Columns</span>
+                  <span class="font-mono text-[var(--sheet-text)]">{visibleColRange}</span>
+                </div>
+                <input
+                  class="sheets-range w-full"
+                  type="range"
+                  min="1"
+                  max={Math.max(1, spreadsheetState.totalCols)}
+                  value={(selectedCol ?? spreadsheetState.horizontalWindow.visibleStartCol) + 1}
+                  oninput={scrubToColumn}
+                />
+              </label>
+            </div>
+          </div>
+
+          <div class="rounded-sm border border-[var(--sheet-border)] bg-white/72 px-3 py-2">
+            <div class="flex items-center justify-between gap-2">
+              <p class="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--sheet-muted)]">
+                Packet Health
+              </p>
+              <span class="font-mono text-[11px] text-[var(--sheet-text)]">
+                cache {spreadsheetState.cacheEntryCount}
+              </span>
+            </div>
+            <div class="mt-3 grid grid-cols-2 gap-2">
+              <div class="sheets-metric-card min-h-[3.25rem]">
+                <span class="sheets-metric-label">Row coverage</span>
+                <span class="sheets-metric-value">{formatPercent(viewportCoverage.rowCoverage)}</span>
+              </div>
+              <div class="sheets-metric-card min-h-[3.25rem]">
+                <span class="sheets-metric-label">Col coverage</span>
+                <span class="sheets-metric-value">{formatPercent(viewportCoverage.colCoverage)}</span>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div class="flex min-h-0 flex-1 flex-col">
@@ -1250,6 +2031,12 @@
                             ? 'justify-end text-right sheets-cell-numeric'
                             : 'justify-start text-left'
                         } ${
+                          isActiveSearchCell(sourceRowIndex, colIndex)
+                            ? 'sheets-cell-search-active'
+                            : isSearchHighlighted(cell)
+                              ? 'sheets-cell-search-hit'
+                              : ''
+                        } ${
                           selectedRow === displayRowIndex && selectedCol === colIndex
                             ? 'sheets-cell-selected'
                             : ''
@@ -1290,7 +2077,9 @@
               <span>View row {selectedDisplayRowLabel}</span>
               <span>Source row {selectedSourceRowLabel}</span>
               <span>Column {selectedColumnLabel}</span>
-              <span>Chunk cache active</span>
+              <span>Chunk cache {spreadsheetState.cacheEntryCount}</span>
+              <span>Row coverage {formatPercent(viewportCoverage.rowCoverage)}</span>
+              <span>Col coverage {formatPercent(viewportCoverage.colCoverage)}</span>
             </div>
             <div class="flex items-center gap-1">
               <span class="text-[var(--sheet-muted)]">Density</span>
@@ -1481,6 +2270,10 @@
     box-shadow: 0 0 0 3px rgba(111, 116, 88, 0.12);
   }
 
+  .sheets-range {
+    accent-color: var(--sheet-accent-strong);
+  }
+
   .sheets-button,
   .sheets-match,
   .sheets-toggle-button,
@@ -1624,6 +2417,15 @@
   .sheets-cell-selected {
     background: rgba(223, 218, 197, 0.96);
     box-shadow: inset 0 0 0 1px var(--sheet-accent-strong);
+  }
+
+  .sheets-cell-search-hit {
+    background: rgba(111, 116, 88, 0.08);
+  }
+
+  .sheets-cell-search-active {
+    background: rgba(111, 116, 88, 0.18);
+    box-shadow: inset 0 0 0 1px rgba(79, 86, 62, 0.42);
   }
 
   .sheets-metric-card,

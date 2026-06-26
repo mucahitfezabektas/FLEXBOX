@@ -22,6 +22,7 @@ struct BackendSidecarState(Arc<Mutex<BackendSidecarRuntime>>);
 #[derive(Default)]
 struct BackendSidecarRuntime {
     child: Option<CommandChild>,
+    child_pid: Option<u32>,
     shutting_down: bool,
     restart_attempts: u32,
 }
@@ -715,14 +716,19 @@ fn get_data_chunk(
 }
 
 fn stop_sidecar(sidecar_state: &BackendSidecarState) {
-    if let Ok(mut runtime) = sidecar_state.0.lock() {
+    let (child, child_pid) = if let Ok(mut runtime) = sidecar_state.0.lock() {
         runtime.shutting_down = true;
-        if let Some(child) = runtime.child.take() {
-            let _ = child.kill();
-        }
+        (runtime.child.take(), runtime.child_pid.take())
+    } else {
+        (None, None)
+    };
+
+    if let Some(child) = child {
+        let _ = child.kill();
     }
 
     thread::sleep(Duration::from_millis(180));
+    terminate_sidecar_process_tree(child_pid);
 }
 
 #[cfg(target_os = "windows")]
@@ -734,6 +740,21 @@ fn terminate_orphan_sidecars() {
 
 #[cfg(not(target_os = "windows"))]
 fn terminate_orphan_sidecars() {}
+
+#[cfg(target_os = "windows")]
+fn terminate_sidecar_process_tree(pid: Option<u32>) {
+    if let Some(pid) = pid {
+        let _ = Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .output();
+        thread::sleep(Duration::from_millis(120));
+    }
+
+    terminate_orphan_sidecars();
+}
+
+#[cfg(not(target_os = "windows"))]
+fn terminate_sidecar_process_tree(_pid: Option<u32>) {}
 
 #[tauri::command]
 fn shutdown_application(
@@ -774,6 +795,8 @@ fn spawn_backend_sidecar(app_handle: tauri::AppHandle) -> Result<(), String> {
             .0
             .lock()
             .map_err(|_| "failed to store sidecar".to_string())?;
+        runtime.shutting_down = false;
+        runtime.child_pid = Some(child.pid());
         runtime.child = Some(child);
         runtime.restart_attempts = 0;
     }
@@ -792,6 +815,7 @@ fn spawn_backend_sidecar(app_handle: tauri::AppHandle) -> Result<(), String> {
 
                     if let Ok(mut runtime) = app_handle.state::<BackendSidecarState>().0.lock() {
                         runtime.child = None;
+                        runtime.child_pid = None;
                     }
 
                     schedule_sidecar_restart(app_handle.clone());
