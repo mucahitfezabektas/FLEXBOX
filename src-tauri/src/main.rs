@@ -3,6 +3,7 @@
 use calamine::{open_workbook_auto, Data, Range, Reader};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
+    cmp::Ordering,
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -26,11 +27,36 @@ struct BackendSidecarRuntime {
 
 struct SpreadsheetState(Arc<Mutex<SpreadsheetRuntime>>);
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum SpreadsheetSortDirection {
+    Asc,
+    Desc,
+}
+
+#[derive(Debug, Clone)]
+enum SpreadsheetSortKey {
+    Empty,
+    Number(f64),
+    Text(String),
+}
+
+#[derive(Debug, Default)]
+struct SheetViewRuntime {
+    header_row_enabled: bool,
+    filter_query: Option<String>,
+    sort_col: Option<usize>,
+    sort_direction: Option<SpreadsheetSortDirection>,
+    visible_row_count: usize,
+    visible_row_indices: Option<Vec<usize>>,
+}
+
 struct SheetRuntime {
     name: String,
     range: Range<Data>,
     total_rows: usize,
     total_cols: usize,
+    view: SheetViewRuntime,
 }
 
 #[derive(Default)]
@@ -64,7 +90,12 @@ struct SpreadsheetLoadResult {
     active_sheet_index: usize,
     sheet_name: String,
     total_rows: usize,
+    source_total_rows: usize,
     total_cols: usize,
+    header_row_enabled: bool,
+    filter_query: String,
+    sort_col: Option<usize>,
+    sort_direction: Option<SpreadsheetSortDirection>,
     sheets: Vec<SpreadsheetSheetSummary>,
 }
 
@@ -75,13 +106,18 @@ struct SpreadsheetChunkResponse {
     start_col: usize,
     col_limit: usize,
     total_rows: usize,
+    source_total_rows: usize,
     total_cols: usize,
+    header_row_enabled: bool,
+    headers: Vec<String>,
+    source_rows: Vec<usize>,
     rows: Vec<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
 struct SpreadsheetSearchMatch {
-    row: usize,
+    display_row: usize,
+    source_row: usize,
     col: usize,
     value: String,
 }
@@ -184,9 +220,194 @@ fn serialize_cell(cell: &Data) -> String {
     }
 }
 
+fn normalize_optional_query(query: Option<String>) -> Option<String> {
+    query
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn parse_sort_number(value: &str) -> Option<f64> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let normalized = if trimmed.contains(',') && !trimmed.contains('.') {
+        trimmed.replace(',', ".")
+    } else {
+        trimmed.to_string()
+    };
+
+    normalized.parse::<f64>().ok()
+}
+
+fn build_sort_key(value: &str) -> SpreadsheetSortKey {
+    let trimmed = value.trim();
+
+    if trimmed.is_empty() {
+        return SpreadsheetSortKey::Empty;
+    }
+
+    if let Some(number) = parse_sort_number(trimmed) {
+        return SpreadsheetSortKey::Number(number);
+    }
+
+    SpreadsheetSortKey::Text(trimmed.to_lowercase())
+}
+
+fn compare_sort_keys(left: &SpreadsheetSortKey, right: &SpreadsheetSortKey) -> Ordering {
+    match (left, right) {
+        (SpreadsheetSortKey::Empty, SpreadsheetSortKey::Empty) => Ordering::Equal,
+        (SpreadsheetSortKey::Empty, _) => Ordering::Greater,
+        (_, SpreadsheetSortKey::Empty) => Ordering::Less,
+        (SpreadsheetSortKey::Number(left_value), SpreadsheetSortKey::Number(right_value)) => {
+            left_value
+                .partial_cmp(right_value)
+                .unwrap_or(Ordering::Equal)
+        }
+        (SpreadsheetSortKey::Number(_), SpreadsheetSortKey::Text(_)) => Ordering::Less,
+        (SpreadsheetSortKey::Text(_), SpreadsheetSortKey::Number(_)) => Ordering::Greater,
+        (SpreadsheetSortKey::Text(left_value), SpreadsheetSortKey::Text(right_value)) => {
+            left_value.cmp(right_value)
+        }
+    }
+}
+
+fn row_matches_query(sheet: &SheetRuntime, source_row: usize, query: &str) -> bool {
+    for col_index in 0..sheet.total_cols {
+        let value = sheet
+            .range
+            .get((source_row, col_index))
+            .map(serialize_cell)
+            .unwrap_or_default();
+
+        if value.to_lowercase().contains(query) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn rebuild_sheet_view(sheet: &mut SheetRuntime) {
+    let data_start_row = if sheet.view.header_row_enabled && sheet.total_rows > 0 {
+        1
+    } else {
+        0
+    };
+
+    if data_start_row >= sheet.total_rows {
+        sheet.view.visible_row_count = 0;
+        sheet.view.visible_row_indices = None;
+        return;
+    }
+
+    let normalized_query = sheet
+        .view
+        .filter_query
+        .as_ref()
+        .map(|value| value.to_lowercase())
+        .filter(|value| !value.is_empty());
+    let sort_col = sheet
+        .view
+        .sort_col
+        .filter(|column| *column < sheet.total_cols);
+    sheet.view.sort_col = sort_col;
+
+    let needs_materialized_rows = normalized_query.is_some() || sort_col.is_some();
+    if !needs_materialized_rows {
+        sheet.view.visible_row_count = sheet.total_rows - data_start_row;
+        sheet.view.visible_row_indices = None;
+        return;
+    }
+
+    let mut row_indices: Vec<usize> = (data_start_row..sheet.total_rows).collect();
+
+    if let Some(query) = normalized_query.as_deref() {
+        row_indices.retain(|row_index| row_matches_query(sheet, *row_index, query));
+    }
+
+    if let Some(sort_column) = sort_col {
+        let sort_direction = sheet
+            .view
+            .sort_direction
+            .unwrap_or(SpreadsheetSortDirection::Asc);
+        let mut keyed_rows: Vec<(usize, SpreadsheetSortKey)> = row_indices
+            .into_iter()
+            .map(|row_index| {
+                let value = sheet
+                    .range
+                    .get((row_index, sort_column))
+                    .map(serialize_cell)
+                    .unwrap_or_default();
+                (row_index, build_sort_key(&value))
+            })
+            .collect();
+
+        keyed_rows.sort_by(|left, right| compare_sort_keys(&left.1, &right.1));
+        if sort_direction == SpreadsheetSortDirection::Desc {
+            keyed_rows.reverse();
+        }
+
+        row_indices = keyed_rows
+            .into_iter()
+            .map(|(row_index, _)| row_index)
+            .collect();
+    }
+
+    sheet.view.visible_row_count = row_indices.len();
+    sheet.view.visible_row_indices = Some(row_indices);
+}
+
+impl SheetRuntime {
+    fn data_start_row(&self) -> usize {
+        if self.view.header_row_enabled && self.total_rows > 0 {
+            1
+        } else {
+            0
+        }
+    }
+
+    fn resolve_source_row(&self, display_row: usize) -> Option<usize> {
+        if display_row >= self.view.visible_row_count {
+            return None;
+        }
+
+        if let Some(visible_row_indices) = self.view.visible_row_indices.as_ref() {
+            return visible_row_indices.get(display_row).copied();
+        }
+
+        Some(self.data_start_row() + display_row)
+    }
+
+    fn visible_headers(&self, start_col: usize, col_limit: usize) -> Vec<String> {
+        let end_col = start_col.saturating_add(col_limit).min(self.total_cols);
+        let mut headers = Vec::with_capacity(end_col.saturating_sub(start_col));
+
+        for col_index in start_col..end_col {
+            let value = if self.view.header_row_enabled && self.total_rows > 0 {
+                self.range
+                    .get((0, col_index))
+                    .map(serialize_cell)
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+
+            headers.push(value);
+        }
+
+        headers
+    }
+}
+
 impl SpreadsheetRuntime {
     fn active_sheet(&self) -> Option<&SheetRuntime> {
         self.sheets.get(self.active_sheet_index)
+    }
+
+    fn active_sheet_mut(&mut self) -> Option<&mut SheetRuntime> {
+        self.sheets.get_mut(self.active_sheet_index)
     }
 }
 
@@ -214,8 +435,13 @@ fn build_load_result(
         file_name: file_name.to_string(),
         active_sheet_index,
         sheet_name: active_sheet.name.clone(),
-        total_rows: active_sheet.total_rows,
+        total_rows: active_sheet.view.visible_row_count,
+        source_total_rows: active_sheet.total_rows,
         total_cols: active_sheet.total_cols,
+        header_row_enabled: active_sheet.view.header_row_enabled,
+        filter_query: active_sheet.view.filter_query.clone().unwrap_or_default(),
+        sort_col: active_sheet.view.sort_col,
+        sort_direction: active_sheet.view.sort_direction,
         sheets: build_sheet_summaries(sheets),
     })
 }
@@ -249,13 +475,15 @@ async fn load_excel_file(
                     .ok_or_else(|| format!("failed to read worksheet at index {sheet_index}"))?
                     .map_err(|error| format!("failed to parse worksheet '{sheet_name}': {error}"))?;
                 let (total_rows, total_cols) = range.get_size();
-
-                sheets.push(SheetRuntime {
+                let mut sheet = SheetRuntime {
                     name: sheet_name,
                     range,
                     total_rows,
                     total_cols,
-                });
+                    view: SheetViewRuntime::default(),
+                };
+                rebuild_sheet_view(&mut sheet);
+                sheets.push(sheet);
             }
 
             Ok(LoadedWorkbook {
@@ -308,7 +536,45 @@ fn set_active_sheet(
 }
 
 #[tauri::command]
-fn find_in_active_sheet(
+async fn configure_active_sheet_view(
+    state: tauri::State<'_, SpreadsheetState>,
+    header_row_enabled: bool,
+    filter_query: Option<String>,
+    sort_col: Option<usize>,
+    sort_direction: Option<SpreadsheetSortDirection>,
+) -> Result<SpreadsheetLoadResult, String> {
+    let runtime = state.0.clone();
+
+    tauri::async_runtime::spawn_blocking(move || -> Result<SpreadsheetLoadResult, String> {
+        let mut runtime = runtime
+            .lock()
+            .map_err(|_| "failed to acquire spreadsheet state".to_string())?;
+
+        let sheet = runtime
+            .active_sheet_mut()
+            .ok_or_else(|| "no Excel workbook has been loaded".to_string())?;
+        sheet.view.header_row_enabled = header_row_enabled;
+        sheet.view.filter_query = normalize_optional_query(filter_query);
+        sheet.view.sort_col = sort_col.filter(|column| *column < sheet.total_cols);
+        sheet.view.sort_direction = if sheet.view.sort_col.is_some() {
+            sort_direction.or(Some(SpreadsheetSortDirection::Asc))
+        } else {
+            None
+        };
+        rebuild_sheet_view(sheet);
+
+        let file_name = runtime
+            .file_name
+            .clone()
+            .unwrap_or_else(|| "workbook.xlsx".to_string());
+        build_load_result(&file_name, runtime.active_sheet_index, &runtime.sheets)
+    })
+    .await
+    .map_err(|error| format!("failed to configure worksheet view: {error}"))?
+}
+
+#[tauri::command]
+async fn find_in_active_sheet(
     state: tauri::State<'_, SpreadsheetState>,
     query: String,
     limit: usize,
@@ -319,41 +585,51 @@ fn find_in_active_sheet(
         return Ok(Vec::new());
     }
 
-    let runtime = state
-        .0
-        .lock()
-        .map_err(|_| "failed to acquire spreadsheet state".to_string())?;
-    let sheet = runtime
-        .active_sheet()
-        .ok_or_else(|| "no Excel workbook has been loaded".to_string())?;
-    let result_limit = limit.clamp(1, 200);
-    let mut matches = Vec::with_capacity(result_limit);
+    let runtime = state.0.clone();
 
-    for row_index in 0..sheet.total_rows {
-        for col_index in 0..sheet.total_cols {
-            let value = sheet
-                .range
-                .get((row_index, col_index))
-                .map(serialize_cell)
-                .unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<SpreadsheetSearchMatch>, String> {
+        let runtime = runtime
+            .lock()
+            .map_err(|_| "failed to acquire spreadsheet state".to_string())?;
+        let sheet = runtime
+            .active_sheet()
+            .ok_or_else(|| "no Excel workbook has been loaded".to_string())?;
+        let result_limit = limit.clamp(1, 200);
+        let mut matches = Vec::with_capacity(result_limit);
 
-            if value.is_empty() || !value.to_lowercase().contains(&normalized_query) {
+        for display_row in 0..sheet.view.visible_row_count {
+            let Some(source_row) = sheet.resolve_source_row(display_row) else {
                 continue;
-            }
+            };
 
-            matches.push(SpreadsheetSearchMatch {
-                row: row_index,
-                col: col_index,
-                value,
-            });
+            for col_index in 0..sheet.total_cols {
+                let value = sheet
+                    .range
+                    .get((source_row, col_index))
+                    .map(serialize_cell)
+                    .unwrap_or_default();
 
-            if matches.len() >= result_limit {
-                return Ok(matches);
+                if value.is_empty() || !value.to_lowercase().contains(&normalized_query) {
+                    continue;
+                }
+
+                matches.push(SpreadsheetSearchMatch {
+                    display_row,
+                    source_row,
+                    col: col_index,
+                    value,
+                });
+
+                if matches.len() >= result_limit {
+                    return Ok(matches);
+                }
             }
         }
-    }
 
-    Ok(matches)
+        Ok(matches)
+    })
+    .await
+    .map_err(|error| format!("failed to search worksheet: {error}"))?
 }
 
 #[tauri::command]
@@ -372,14 +648,18 @@ fn get_data_chunk(
         .active_sheet()
         .ok_or_else(|| "no Excel workbook has been loaded".to_string())?;
 
-    if sheet.total_rows == 0 || sheet.total_cols == 0 {
+    if sheet.view.visible_row_count == 0 || sheet.total_cols == 0 {
         return Ok(SpreadsheetChunkResponse {
             start_row: 0,
             row_limit: 0,
             start_col: 0,
             col_limit: 0,
-            total_rows: sheet.total_rows,
+            total_rows: sheet.view.visible_row_count,
+            source_total_rows: sheet.total_rows,
             total_cols: sheet.total_cols,
+            header_row_enabled: sheet.view.header_row_enabled,
+            headers: Vec::new(),
+            source_rows: Vec::new(),
             rows: Vec::new(),
         });
     }
@@ -388,21 +668,28 @@ fn get_data_chunk(
         return Err("no Excel workbook has been loaded".to_string());
     }
 
-    let total_rows = sheet.total_rows;
+    let total_rows = sheet.view.visible_row_count;
     let total_cols = sheet.total_cols;
     let start_row = start_row.min(total_rows);
     let end_row = start_row.saturating_add(row_limit).min(total_rows);
     let start_col = start_col.min(total_cols);
     let end_col = start_col.saturating_add(col_limit).min(total_cols);
+    let headers = sheet.visible_headers(start_col, end_col.saturating_sub(start_col));
+    let mut source_rows = Vec::with_capacity(end_row.saturating_sub(start_row));
     let mut rows = Vec::with_capacity(end_row.saturating_sub(start_row));
 
-    for row_index in start_row..end_row {
+    for display_row in start_row..end_row {
+        let Some(source_row) = sheet.resolve_source_row(display_row) else {
+            continue;
+        };
+
+        source_rows.push(source_row);
         let mut row = Vec::with_capacity(end_col.saturating_sub(start_col));
 
         for col_index in start_col..end_col {
             let value = sheet
                 .range
-                .get((row_index, col_index))
+                .get((source_row, col_index))
                 .map(serialize_cell)
                 .unwrap_or_default();
             row.push(value);
@@ -413,11 +700,15 @@ fn get_data_chunk(
 
     Ok(SpreadsheetChunkResponse {
         start_row,
-        row_limit: end_row.saturating_sub(start_row),
+        row_limit: rows.len(),
         start_col,
-        col_limit: end_col.saturating_sub(start_col),
+        col_limit: headers.len(),
         total_rows,
+        source_total_rows: sheet.total_rows,
         total_cols,
+        header_row_enabled: sheet.view.header_row_enabled,
+        headers,
+        source_rows,
         rows,
     })
 }
@@ -540,6 +831,7 @@ fn main() {
             clear_workspace_session,
             load_excel_file,
             set_active_sheet,
+            configure_active_sheet_view,
             find_in_active_sheet,
             get_data_chunk
         ])

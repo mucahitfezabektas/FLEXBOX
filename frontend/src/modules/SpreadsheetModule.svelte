@@ -9,24 +9,30 @@
   const isDesktopRuntime = isTauri();
   let filePathInput = $state('');
   let searchInput = $state('');
+  let filterInput = $state('');
   let jumpToRowInput = $state('');
   let viewportElement = $state<HTMLDivElement | null>(null);
   let viewportHeight = $state(0);
   let viewportWidth = $state(0);
 
   const activeRows = $derived(spreadsheetState.activeRows);
+  const activeSourceRows = $derived(spreadsheetState.activeSourceRows);
   const activeStartRow = $derived(spreadsheetState.activePacket?.start_row ?? 0);
   const activeRowLimit = $derived(spreadsheetState.activePacket?.row_limit ?? 0);
   const activeStartCol = $derived(spreadsheetState.activePacket?.start_col ?? 0);
   const activeColLimit = $derived(spreadsheetState.activePacket?.col_limit ?? 0);
   const activeColumnLabels = $derived(spreadsheetState.visibleColumnLabels);
   const selectedRow = $derived(spreadsheetState.selectedRow);
+  const selectedSourceRow = $derived(spreadsheetState.selectedSourceRow);
   const selectedCol = $derived(spreadsheetState.selectedCol);
   const selectedAddress = $derived.by(() =>
-    selectedRow !== null && selectedCol !== null
-      ? `${excelColumnLabel(selectedCol + 1)}${selectedRow + 1}`
+    selectedCol !== null
+      ? `${excelColumnLabel(selectedCol + 1)}${
+          (selectedSourceRow ?? selectedRow ?? 0) + 1
+        }`
       : 'None'
   );
+  const selectedValue = $derived(spreadsheetState.selectedCellValue);
   const visibleRowRange = $derived.by(() => {
     if (!spreadsheetState.hasWorkbook || spreadsheetState.totalRows === 0) {
       return '0 - 0';
@@ -65,13 +71,22 @@
     return label;
   }
 
+  function columnSortMarker(colIndex: number) {
+    if (spreadsheetState.sortCol !== colIndex) {
+      return '';
+    }
+
+    return spreadsheetState.sortDirection === 'desc' ? 'v' : '^';
+  }
+
   function isNumericCell(value: string | undefined) {
     const normalized = (value ?? '').trim();
     return normalized.length > 0 && /^[-+]?(\d+([.,]\d+)?|[.,]\d+)$/.test(normalized);
   }
 
   function formatCellValue(value: string | undefined) {
-    return value ?? '';
+    const normalized = value ?? '';
+    return normalized.length > 0 ? normalized : ' ';
   }
 
   function syncViewportScroll() {
@@ -116,6 +131,7 @@
       filePathInput = selected;
       await spreadsheetState.loadExcelFile(selected);
       searchInput = '';
+      filterInput = spreadsheetState.filterQuery;
       jumpToRowInput = '';
       syncViewportScroll();
     } catch (error) {
@@ -161,6 +177,7 @@
 
     await spreadsheetState.activateSheet(sheetIndex);
     searchInput = '';
+    filterInput = spreadsheetState.filterQuery;
     jumpToRowInput = '';
     syncViewportScroll();
   }
@@ -169,12 +186,39 @@
     await spreadsheetState.searchWorkbook(searchInput);
   }
 
-  function focusMatch(match: SpreadsheetSearchMatch) {
-    spreadsheetState.focusCell(match.row, match.col);
+  async function applyFilter() {
+    await spreadsheetState.applyFilter(filterInput);
     syncViewportScroll();
   }
 
-  function goToRow() {
+  async function clearViewOptions() {
+    filterInput = '';
+    await spreadsheetState.clearViewOptions();
+    syncViewportScroll();
+  }
+
+  async function handleHeaderToggle(event: Event) {
+    const target = event.currentTarget as HTMLInputElement | null;
+
+    if (!target) {
+      return;
+    }
+
+    await spreadsheetState.setHeaderRowEnabled(target.checked);
+    syncViewportScroll();
+  }
+
+  async function sortByColumn(colIndex: number) {
+    await spreadsheetState.cycleColumnSort(colIndex);
+    syncViewportScroll();
+  }
+
+  function focusMatch(match: SpreadsheetSearchMatch) {
+    spreadsheetState.focusCell(match.display_row, match.col, match.source_row);
+    syncViewportScroll();
+  }
+
+  function goToVisibleRow() {
     const rowNumber = Number.parseInt(jumpToRowInput, 10);
 
     if (Number.isNaN(rowNumber)) {
@@ -185,8 +229,87 @@
     syncViewportScroll();
   }
 
-  function focusCell(rowIndex: number, colIndex: number) {
-    spreadsheetState.setSelectedCell(rowIndex, colIndex);
+  function focusCell(displayRowIndex: number, colIndex: number, sourceRowIndex: number) {
+    spreadsheetState.setSelectedCell(displayRowIndex, colIndex, sourceRowIndex);
+  }
+
+  async function copySelectionValue() {
+    if (!selectedValue) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(selectedValue);
+    } catch {
+      // Clipboard support is optional in browser fallback mode.
+    }
+  }
+
+  function handleViewportKeydown(event: KeyboardEvent) {
+    if (!spreadsheetState.hasWorkbook) {
+      return;
+    }
+
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c') {
+      event.preventDefault();
+      void copySelectionValue();
+      return;
+    }
+
+    switch (event.key) {
+      case 'ArrowUp':
+        event.preventDefault();
+        spreadsheetState.moveSelection(-1, 0);
+        syncViewportScroll();
+        break;
+      case 'ArrowDown':
+        event.preventDefault();
+        spreadsheetState.moveSelection(1, 0);
+        syncViewportScroll();
+        break;
+      case 'ArrowLeft':
+        event.preventDefault();
+        spreadsheetState.moveSelection(0, -1);
+        syncViewportScroll();
+        break;
+      case 'ArrowRight':
+        event.preventDefault();
+        spreadsheetState.moveSelection(0, 1);
+        syncViewportScroll();
+        break;
+      case 'Enter':
+        event.preventDefault();
+        spreadsheetState.moveSelection(event.shiftKey ? -1 : 1, 0);
+        syncViewportScroll();
+        break;
+      case 'Tab':
+        event.preventDefault();
+        spreadsheetState.moveSelection(0, event.shiftKey ? -1 : 1);
+        syncViewportScroll();
+        break;
+      case 'PageUp':
+        event.preventDefault();
+        spreadsheetState.pageSelection('up');
+        syncViewportScroll();
+        break;
+      case 'PageDown':
+        event.preventDefault();
+        spreadsheetState.pageSelection('down');
+        syncViewportScroll();
+        break;
+      case 'Home':
+        event.preventDefault();
+        spreadsheetState.moveSelectionToEdge(event.ctrlKey ? 'grid-start' : 'row-start');
+        syncViewportScroll();
+        break;
+      case 'End':
+        event.preventDefault();
+        spreadsheetState.moveSelectionToEdge(event.ctrlKey ? 'grid-end' : 'row-end');
+        syncViewportScroll();
+        break;
+      default:
+        break;
+    }
   }
 
   $effect(() => {
@@ -197,6 +320,10 @@
     if (spreadsheetState.filePath && spreadsheetState.filePath !== filePathInput) {
       filePathInput = spreadsheetState.filePath;
     }
+  });
+
+  $effect(() => {
+    filterInput = spreadsheetState.filterQuery;
   });
 </script>
 
@@ -258,7 +385,7 @@
         </p>
       {:else}
         <p class="mt-2 text-data-xs text-enterprise-text-muted">
-          Workbook is held in Rust memory. FLEXBOX only requests the active row and column window for rendering.
+          Workbook is kept in Rust memory. View transforms stay in the backend, while Svelte only paints the active viewport.
         </p>
       {/if}
     </div>
@@ -280,15 +407,15 @@
         </p>
       </div>
       <div class="rounded-sm border border-slate-200 bg-slate-50 px-3 py-2">
-        <p class="text-[10px] uppercase tracking-[0.16em] text-slate-500">Rows</p>
+        <p class="text-[10px] uppercase tracking-[0.16em] text-slate-500">Visible Rows</p>
         <p class="mt-1 font-mono text-data-sm font-semibold text-slate-700">
           {spreadsheetState.totalRows.toLocaleString()}
         </p>
       </div>
       <div class="rounded-sm border border-slate-200 bg-slate-50 px-3 py-2">
-        <p class="text-[10px] uppercase tracking-[0.16em] text-slate-500">Columns</p>
+        <p class="text-[10px] uppercase tracking-[0.16em] text-slate-500">Source Rows</p>
         <p class="mt-1 font-mono text-data-sm font-semibold text-slate-700">
-          {spreadsheetState.totalCols.toLocaleString()}
+          {spreadsheetState.sourceTotalRows.toLocaleString()}
         </p>
       </div>
     </div>
@@ -314,16 +441,52 @@
       </select>
     </div>
 
-    <div class="min-w-[260px] flex-1">
+    <div class="min-w-[280px] flex-1">
+      <label class="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500" for="filter-input">
+        Filter Rows
+      </label>
+      <div class="mt-1 flex gap-2">
+        <input
+          id="filter-input"
+          bind:value={filterInput}
+          class="enterprise-input h-9 min-w-0 flex-1 rounded-sm px-3 font-mono text-sm"
+          placeholder="Filter rows by text"
+          spellcheck="false"
+          disabled={!spreadsheetState.hasWorkbook}
+          onkeydown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              void applyFilter();
+            }
+          }}
+        />
+        <button
+          class="toolbar-button h-9 rounded-sm px-4 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
+          onclick={applyFilter}
+          disabled={!spreadsheetState.hasWorkbook || spreadsheetState.isApplyingView}
+        >
+          Apply
+        </button>
+        <button
+          class="toolbar-button h-9 rounded-sm px-4 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
+          onclick={clearViewOptions}
+          disabled={!spreadsheetState.hasWorkbook}
+        >
+          Clear
+        </button>
+      </div>
+    </div>
+
+    <div class="min-w-[240px] flex-1">
       <label class="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500" for="search-input">
-        Find In Sheet
+        Find In Current View
       </label>
       <div class="mt-1 flex gap-2">
         <input
           id="search-input"
           bind:value={searchInput}
           class="enterprise-input h-9 min-w-0 flex-1 rounded-sm px-3 font-mono text-sm"
-          placeholder="Search visible workbook values"
+          placeholder="Search matches"
           spellcheck="false"
           disabled={!spreadsheetState.hasWorkbook}
           onkeydown={(event) => {
@@ -345,32 +508,73 @@
 
     <div class="min-w-[180px]">
       <label class="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500" for="goto-row">
-        Jump To Row
+        Jump To View Row
       </label>
       <div class="mt-1 flex gap-2">
         <input
           id="goto-row"
           bind:value={jumpToRowInput}
           class="enterprise-input h-9 min-w-0 flex-1 rounded-sm px-3 font-mono text-sm"
-          placeholder="125000"
+          placeholder="25000"
           spellcheck="false"
           disabled={!spreadsheetState.hasWorkbook}
           onkeydown={(event) => {
             if (event.key === 'Enter') {
               event.preventDefault();
-              goToRow();
+              goToVisibleRow();
             }
           }}
         />
         <button
           class="toolbar-button h-9 rounded-sm px-4 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
-          onclick={goToRow}
+          onclick={goToVisibleRow}
           disabled={!spreadsheetState.hasWorkbook}
         >
           Go
         </button>
       </div>
     </div>
+  </div>
+
+  <div class="flex flex-wrap items-center gap-4 border-b border-slate-200 bg-white px-3 py-2">
+    <label class="inline-flex items-center gap-2 text-data-xs text-slate-700">
+      <input
+        type="checkbox"
+        class="h-4 w-4 rounded border-slate-300 text-slate-700"
+        checked={spreadsheetState.headerRowEnabled}
+        onchange={handleHeaderToggle}
+        disabled={!spreadsheetState.hasWorkbook}
+      />
+      Use first row as headers
+    </label>
+    <span class="font-mono text-[11px] text-slate-500">
+      Filter: {spreadsheetState.activeFilter.length > 0 ? spreadsheetState.activeFilter : 'none'}
+    </span>
+    <span class="font-mono text-[11px] text-slate-500">
+      Sort:
+      {#if spreadsheetState.sortCol !== null}
+        {excelColumnLabel(spreadsheetState.sortCol + 1)} {spreadsheetState.sortDirection}
+      {:else}
+        none
+      {/if}
+    </span>
+  </div>
+
+  <div class="flex items-center gap-3 border-b border-slate-200 bg-slate-50 px-3 py-2">
+    <div class="flex h-8 w-24 items-center rounded-sm border border-slate-300 bg-white px-2 font-mono text-xs font-semibold text-slate-700">
+      {selectedAddress}
+    </div>
+    <div class="flex min-w-0 flex-1 items-center rounded-sm border border-slate-300 bg-white px-3 py-1.5 font-mono text-xs text-slate-700">
+      <span class="truncate">{selectedValue || 'Select a cell to inspect or copy its value.'}</span>
+    </div>
+    <button
+      class="toolbar-button h-8 rounded-sm px-3 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-50"
+      onclick={copySelectionValue}
+      disabled={!selectedValue}
+      type="button"
+    >
+      Copy
+    </button>
   </div>
 
   {#if spreadsheetState.searchResults.length > 0}
@@ -381,7 +585,7 @@
             class="rounded-sm border border-slate-300 bg-slate-50 px-2 py-1 font-mono text-[11px] text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
             onclick={() => focusMatch(match)}
           >
-            {excelColumnLabel(match.col + 1)}{match.row + 1}: {match.value.slice(0, 36)}
+            {excelColumnLabel(match.col + 1)}{match.source_row + 1} [view {match.display_row + 1}]: {match.value.slice(0, 32)}
           </button>
         {/each}
       </div>
@@ -394,7 +598,7 @@
         <div class="flex flex-wrap items-center gap-2 text-data-xs text-slate-600">
           <span class="font-mono font-semibold text-slate-700">{spreadsheetState.sheetName}</span>
           <span class="h-3 w-px bg-slate-300"></span>
-          <span>Rows {visibleRowRange}</span>
+          <span>Visible rows {visibleRowRange}</span>
           <span class="h-3 w-px bg-slate-300"></span>
           <span>Cols {visibleColRange}</span>
           <span class="h-3 w-px bg-slate-300"></span>
@@ -405,6 +609,8 @@
           <span>Cell {selectedAddress}</span>
           <span class="h-3 w-px bg-slate-300"></span>
           <span>Status {spreadsheetState.statusLabel}</span>
+          <span class="h-3 w-px bg-slate-300"></span>
+          <span>Nav Arrows / Tab / Enter / PageUp / PageDown / Ctrl+C</span>
         </div>
       </div>
 
@@ -412,8 +618,11 @@
         bind:this={viewportElement}
         bind:clientHeight={viewportHeight}
         bind:clientWidth={viewportWidth}
-        class="enterprise-scrollbar min-h-0 flex-1 overflow-auto bg-white"
+        class="enterprise-scrollbar min-h-0 flex-1 overflow-auto bg-white outline-none"
         onscroll={handleScroll}
+        onkeydown={handleViewportKeydown}
+        role="grid"
+        tabindex="0"
       >
         <div
           class="min-w-max"
@@ -433,13 +642,20 @@
                 aria-hidden="true"
                 style={`width: ${spreadsheetState.horizontalWindow.leftSpacerWidth}px; flex: 0 0 ${spreadsheetState.horizontalWindow.leftSpacerWidth}px;`}
               ></div>
-              {#each activeColumnLabels as label}
-                <div
-                  class="flex h-7 shrink-0 items-center border-r border-slate-200 px-2 py-1 font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500"
+              {#each activeColumnLabels as label, colOffset}
+                {@const colIndex = activeStartCol + colOffset}
+                <button
+                  class={`flex h-7 shrink-0 items-center gap-2 border-r border-slate-200 px-2 py-1 font-mono text-[10px] font-semibold tracking-[0.12em] text-slate-600 transition hover:bg-slate-50 ${
+                    spreadsheetState.sortCol === colIndex ? 'bg-slate-100 text-slate-800' : ''
+                  }`}
                   style={`width: ${spreadsheetState.columnWidth}px; flex: 0 0 ${spreadsheetState.columnWidth}px;`}
+                  onclick={() => void sortByColumn(colIndex)}
+                  type="button"
+                  title="Click to cycle sort"
                 >
-                  {label}
-                </div>
+                  <span class="block truncate text-left uppercase">{label}</span>
+                  <span class="text-[10px] text-slate-400">{columnSortMarker(colIndex)}</span>
+                </button>
               {/each}
               <div
                 aria-hidden="true"
@@ -451,19 +667,20 @@
           <div style={`height: ${spreadsheetState.verticalWindow.topSpacerHeight}px;`} aria-hidden="true"></div>
 
           {#each activeRows as row, rowOffset (activeStartRow + rowOffset)}
-            {@const rowIndex = activeStartRow + rowOffset}
+            {@const displayRowIndex = activeStartRow + rowOffset}
+            {@const sourceRowIndex = activeSourceRows[rowOffset] ?? displayRowIndex}
             <div
               class={`flex h-7 border-b border-slate-200 text-enterprise-text-primary transition ${
-                selectedRow === rowIndex ? 'bg-slate-50' : 'bg-white hover:bg-slate-50'
+                selectedRow === displayRowIndex ? 'bg-slate-50' : 'bg-white hover:bg-slate-50'
               }`}
             >
               <div
                 class={`sticky left-0 z-20 flex items-center border-r border-slate-200 px-2 py-1 font-mono text-[11px] ${
-                  selectedRow === rowIndex ? 'bg-slate-100 text-slate-700' : 'bg-inherit text-slate-500'
+                  selectedRow === displayRowIndex ? 'bg-slate-100 text-slate-700' : 'bg-inherit text-slate-500'
                 }`}
                 style={`width: ${spreadsheetState.rowHeaderWidth}px; flex: 0 0 ${spreadsheetState.rowHeaderWidth}px;`}
               >
-                {rowIndex + 1}
+                {sourceRowIndex + 1}
               </div>
 
               <div class="flex" style={`width: ${spreadsheetState.totalContentWidth}px; flex: 0 0 ${spreadsheetState.totalContentWidth}px;`}>
@@ -478,12 +695,12 @@
                     class={`flex h-7 shrink-0 items-center border-r border-slate-100 px-2 py-1 font-mono text-xs ${
                       isNumericCell(cell) ? 'justify-end text-right' : 'justify-start text-left'
                     } ${
-                      selectedRow === rowIndex && selectedCol === colIndex
+                      selectedRow === displayRowIndex && selectedCol === colIndex
                         ? 'bg-slate-100 shadow-[inset_0_0_0_1px_var(--enterprise-primary)]'
                         : ''
                     }`}
                     style={`width: ${spreadsheetState.columnWidth}px; flex: 0 0 ${spreadsheetState.columnWidth}px;`}
-                    onclick={() => focusCell(rowIndex, colIndex)}
+                    onclick={() => focusCell(displayRowIndex, colIndex, sourceRowIndex)}
                     title={cell ?? ''}
                     type="button"
                   >
@@ -513,7 +730,7 @@
           </h2>
           <p class="mt-3 max-w-xl text-sm leading-6 text-enterprise-text-secondary">
             FLEXBOX reads workbook data in Rust and only paints the active viewport on the Svelte side.
-            Sheet switching, search and large row jumps stay inside the same workbook session.
+            Filtering, header-row mode and sorting are applied in the backend so large sheets remain responsive.
           </p>
           <div class="mt-5 rounded-sm border border-slate-200 bg-slate-50 px-4 py-3 font-mono text-data-sm text-slate-600">
             Example: `C:\\data\\finance-ledger.xlsx`

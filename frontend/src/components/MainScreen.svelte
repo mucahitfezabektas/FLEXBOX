@@ -21,19 +21,26 @@
   let workspaceWidth = $state(0);
   let workspaceHeight = $state(0);
   let workspaceElement = $state<HTMLDivElement | null>(null);
+  let shellHeaderElement = $state<HTMLElement | null>(null);
   let tauriWindowControls = $state<{
     minimize: () => Promise<void>;
     close: () => Promise<void>;
     toggleMaximize: () => Promise<void>;
+    toggleFullscreen: () => Promise<void>;
     startResizeDragging: (direction: ResizeDirection) => Promise<void>;
     isMaximized: () => Promise<boolean>;
+    isFullscreen: () => Promise<boolean>;
   } | null>(null);
   let shellIsMaximized = $state(false);
+  let shellIsFullscreen = $state(false);
   let shellRuntime = $state<'Tauri' | 'Browser'>('Browser');
   let runtimeStatus = $state<ShellRuntimeStatus>('checking');
   let runtimeMessage = $state('Sidecar durumu kontrol ediliyor...');
   let systemContext = $state<SystemContext | null>(null);
   let currentTime = $state('');
+  let shellHeaderVisible = $state(false);
+  let shellHeaderPinned = $state(false);
+  let headerHideTimer = 0;
 
   const launcherModules = $derived(moduleManager.definitions);
   const focusedModule = $derived(moduleManager.focusedModule);
@@ -77,6 +84,15 @@
     shellIsMaximized = await tauriWindowControls.isMaximized();
   }
 
+  async function syncShellFullscreenState() {
+    if (!tauriWindowControls) {
+      shellIsFullscreen = false;
+      return;
+    }
+
+    shellIsFullscreen = await tauriWindowControls.isFullscreen();
+  }
+
   async function toggleShellMaximize() {
     if (!tauriWindowControls) {
       return;
@@ -86,10 +102,74 @@
     await syncShellMaximizeState();
   }
 
+  async function toggleShellFullscreen() {
+    if (!tauriWindowControls) {
+      return;
+    }
+
+    await tauriWindowControls.toggleFullscreen();
+    await syncShellFullscreenState();
+  }
+
   async function startShellResize(direction: ResizeDirection, event: PointerEvent) {
     event.preventDefault();
     event.stopPropagation();
     await tauriWindowControls?.startResizeDragging(direction);
+  }
+
+  function showShellHeader(pinned = false) {
+    if (headerHideTimer) {
+      window.clearTimeout(headerHideTimer);
+      headerHideTimer = 0;
+    }
+
+    shellHeaderVisible = true;
+    if (pinned) {
+      shellHeaderPinned = true;
+    }
+  }
+
+  function scheduleShellHeaderHide() {
+    if (shellHeaderPinned) {
+      return;
+    }
+
+    if (headerHideTimer) {
+      window.clearTimeout(headerHideTimer);
+    }
+
+    headerHideTimer = window.setTimeout(() => {
+      shellHeaderVisible = false;
+      headerHideTimer = 0;
+    }, 160);
+  }
+
+  function releaseShellHeader() {
+    shellHeaderPinned = false;
+    scheduleShellHeaderHide();
+  }
+
+  function handleShellHeaderFocusOut() {
+    window.setTimeout(() => {
+      if (shellHeaderElement?.contains(document.activeElement)) {
+        return;
+      }
+
+      releaseShellHeader();
+    }, 0);
+  }
+
+  function handleShellPointerMove(event: PointerEvent) {
+    const revealZoneHeight = shellHeaderVisible || shellHeaderPinned ? 72 : 12;
+
+    if (event.clientY <= revealZoneHeight) {
+      showShellHeader();
+      return;
+    }
+
+    if (!shellHeaderPinned) {
+      scheduleShellHeaderHide();
+    }
   }
 
   function openModule(id: ModuleId) {
@@ -184,10 +264,20 @@
       return;
     }
 
+    if (event.key === 'F11' && !event.altKey && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
+      event.preventDefault();
+      void toggleShellFullscreen();
+      return;
+    }
+
     if (event.altKey && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
       const hotkeyIndex = Number.parseInt(event.key, 10) - 1;
 
-      if (Number.isInteger(hotkeyIndex) && hotkeyIndex >= 0 && hotkeyIndex < launcherModules.length) {
+      if (
+        Number.isInteger(hotkeyIndex) &&
+        hotkeyIndex >= 0 &&
+        hotkeyIndex < launcherModules.length
+      ) {
         event.preventDefault();
         openModuleByIndex(hotkeyIndex);
         return;
@@ -231,23 +321,32 @@
           minimize: () => currentWindow.minimize(),
           close: () => currentWindow.close(),
           toggleMaximize: () => currentWindow.toggleMaximize(),
+          toggleFullscreen: async () =>
+            currentWindow.setFullscreen(!(await currentWindow.isFullscreen())),
           startResizeDragging: (direction) => currentWindow.startResizeDragging(direction),
-          isMaximized: () => currentWindow.isMaximized()
+          isMaximized: () => currentWindow.isMaximized(),
+          isFullscreen: () => currentWindow.isFullscreen()
         };
         shellRuntime = 'Tauri';
         await syncShellMaximizeState();
+        await syncShellFullscreenState();
         disposeResizeListener = await currentWindow.onResized(() => {
           void syncShellMaximizeState();
+          void syncShellFullscreenState();
         });
       } catch {
         tauriWindowControls = null;
         shellRuntime = 'Browser';
         shellIsMaximized = false;
+        shellIsFullscreen = false;
       }
     })();
 
     return () => {
       disposeResizeListener?.();
+      if (headerHideTimer) {
+        window.clearTimeout(headerHideTimer);
+      }
       window.clearInterval(clockTimer);
       window.clearInterval(runtimeTimer);
       window.removeEventListener('keydown', handleGlobalKeydown);
@@ -265,22 +364,39 @@
   });
 </script>
 
-<div class="relative flex min-h-screen flex-col overflow-hidden bg-enterprise-bg text-enterprise-text-primary">
-  <header class="top-bar flex h-12 items-center gap-3 border-b px-3">
+<div
+  class="relative flex min-h-screen flex-col overflow-hidden bg-enterprise-bg text-enterprise-text-primary"
+  onpointermove={handleShellPointerMove}
+  onpointerleave={releaseShellHeader}
+  role="application"
+>
+  <div class="shell-header-reveal-zone absolute inset-x-0 top-0 z-50 h-3" role="presentation"></div>
+
+  <div
+    bind:this={shellHeaderElement}
+    class={`top-bar absolute inset-x-0 top-0 z-60 flex h-14 items-center gap-3 border-b px-3 transition-transform duration-200 ease-out ${
+      shellHeaderVisible || shellHeaderPinned ? 'translate-y-0' : '-translate-y-[calc(100%-4px)]'
+    }`}
+    onmouseenter={() => showShellHeader(true)}
+    onmouseleave={releaseShellHeader}
+    onfocusin={() => showShellHeader(true)}
+    onfocusout={handleShellHeaderFocusOut}
+    role="banner"
+  >
     <div
       class="flex h-full min-w-[220px] items-center gap-3 px-1"
       data-tauri-drag-region
       role="presentation"
     >
-      <div class="flex h-8 w-8 items-center justify-center rounded-sm border border-black/10 bg-[rgba(17,24,39,0.92)] text-[11px] font-semibold tracking-[0.18em] text-white shadow-enterprise">
-        UF
+      <div class="flex h-8 w-8 items-center justify-center rounded-sm border border-black/10 bg-[rgba(17,24,39,0.96)] text-[11px] font-semibold tracking-[0.18em] text-white shadow-enterprise">
+        FX
       </div>
       <div class="min-w-0">
         <p class="truncate text-sm font-semibold text-enterprise-text-primary">
           {systemContext?.application ?? 'FLEXBOX'}
         </p>
         <p class="truncate text-data-xs text-enterprise-text-muted">
-          Modular desktop shell for integrated subsystems
+          Integrated desktop workspace for operational data systems
         </p>
       </div>
     </div>
@@ -298,11 +414,7 @@
       {/each}
     </nav>
 
-    <div
-      class="min-w-8 flex-1 self-stretch"
-      data-tauri-drag-region
-      role="presentation"
-    ></div>
+    <div class="min-w-8 flex-1 self-stretch" data-tauri-drag-region role="presentation"></div>
 
     <div class="flex items-center gap-2">
       <span class={`${runtimeBadgeClass(runtimeStatus)} rounded-sm px-2.5 py-1 text-data-xs font-semibold uppercase tracking-[0.14em]`}>
@@ -318,15 +430,15 @@
         <span class="data-code">{currentTime}</span>
       </div>
       <button
-        class="flex h-7 w-7 items-center justify-center rounded-sm border border-black/10 bg-white/82 text-xs text-enterprise-text-secondary shadow-enterprise transition hover:bg-white hover:text-enterprise-text-primary"
+        class="shell-control-button flex h-8 w-10 items-center justify-center rounded-none border-0 bg-transparent text-xs text-enterprise-text-secondary shadow-none transition"
         onclick={minimizeShellWindow}
         aria-label="Minimize application window"
         title="Minimize"
       >
-        <span aria-hidden="true">-</span>
+        <span aria-hidden="true">_</span>
       </button>
       <button
-        class="flex h-7 w-7 items-center justify-center rounded-sm border border-black/10 bg-white/82 text-[11px] text-enterprise-text-secondary shadow-enterprise transition hover:bg-white hover:text-enterprise-text-primary"
+        class="shell-control-button flex h-8 w-10 items-center justify-center rounded-none border-0 bg-transparent text-[11px] text-enterprise-text-secondary shadow-none transition"
         onclick={toggleShellMaximize}
         aria-label={shellIsMaximized ? 'Restore application window' : 'Maximize application window'}
         title={shellIsMaximized ? 'Restore' : 'Maximize'}
@@ -334,7 +446,17 @@
         <span aria-hidden="true">{shellIsMaximized ? '<>' : '[]'}</span>
       </button>
       <button
-        class="flex h-7 w-7 items-center justify-center rounded-sm border border-[rgba(255,59,48,0.22)] bg-[rgba(255,59,48,0.10)] text-xs text-[var(--enterprise-accent)] shadow-enterprise transition hover:bg-[rgba(255,59,48,0.18)]"
+        class={`shell-control-button flex h-8 w-10 items-center justify-center rounded-none border-0 bg-transparent text-[11px] shadow-none transition ${
+          shellIsFullscreen ? 'text-enterprise-text-primary' : 'text-enterprise-text-secondary'
+        }`}
+        onclick={toggleShellFullscreen}
+        aria-label={shellIsFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+        title={shellIsFullscreen ? 'Exit fullscreen (F11)' : 'Fullscreen (F11)'}
+      >
+        <span aria-hidden="true">{shellIsFullscreen ? '][' : '[ ]'}</span>
+      </button>
+      <button
+        class="shell-control-button shell-control-button-danger flex h-8 w-12 items-center justify-center rounded-none border-0 bg-transparent text-xs shadow-none transition"
         onclick={closeShellWindow}
         aria-label="Close application window"
         title="Close"
@@ -342,10 +464,15 @@
         <span aria-hidden="true">x</span>
       </button>
     </div>
-  </header>
+  </div>
 
-  <main class="workspace-shell relative flex-1 overflow-hidden">
-    <div class="absolute inset-0 overflow-hidden" bind:this={workspaceElement} bind:clientWidth={workspaceWidth} bind:clientHeight={workspaceHeight}>
+  <main class={`workspace-shell relative flex-1 overflow-hidden ${shellIsFullscreen ? 'shell-fullscreen' : ''}`}>
+    <div
+      class="absolute inset-0 overflow-hidden"
+      bind:this={workspaceElement}
+      bind:clientWidth={workspaceWidth}
+      bind:clientHeight={workspaceHeight}
+    >
       {#if moduleManager.visibleModules.length === 0}
         <section class="flex h-full items-center justify-center px-8">
           <div class="surface-panel w-full max-w-4xl rounded-md p-6 shadow-window">
@@ -354,8 +481,8 @@
               FLEXBOX
             </h1>
             <p class="mt-3 max-w-2xl text-sm leading-6 text-enterprise-text-secondary">
-              Calisma alanini baslatmak icin bir modul acin. Shell; pencere yonetimi, taskbar, oturum geri yukleme
-              ve sidecar baglantisini ortak olarak saglar.
+              Calisma alanini baslatmak icin bir modul acin. Shell; pencere yonetimi, taskbar, oturum geri yukleme,
+              hover chrome ve native sidecar baglantisini ortak olarak saglar.
             </p>
 
             <div class="mt-5 grid gap-3 sm:grid-cols-3">

@@ -11,7 +11,7 @@
   } from '$lib/types/windowChrome';
   import type { WindowBounds } from '$lib/modules/types';
 
-  type ResizeHandle = 'n' | 's' | 'e' | 'w' | 'se';
+  type ResizeHandle = 'n' | 's' | 'e' | 'w' | 'nw' | 'ne' | 'sw' | 'se';
 
   interface DragInteraction {
     type: 'drag';
@@ -582,9 +582,11 @@
   aria-label={title}
   tabindex="-1"
 >
-  <div class={`window-header select-none flex h-12 cursor-grab items-center justify-between gap-3 px-4 active:cursor-grabbing ${isDocked(frameBounds) ? 'bg-white' : ''}`} onpointerdown={startDrag} ondblclick={handleHeaderDoubleClick} role="presentation">
+  <div class="absolute inset-x-0 top-0 h-[2px] bg-[linear-gradient(90deg,rgba(59,130,246,0.88),rgba(59,130,246,0.08))]" aria-hidden="true"></div>
+
+  <div class={`window-header select-none flex h-11 cursor-grab items-center justify-between gap-3 px-3.5 active:cursor-grabbing ${isDocked(frameBounds) ? 'bg-white' : ''}`} onpointerdown={startDrag} ondblclick={handleHeaderDoubleClick} role="presentation">
     <div class="flex min-w-0 items-center gap-3">
-      <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-sm border border-black/10 bg-[rgba(17,24,39,0.92)] text-[10px] font-semibold uppercase tracking-[0.18em] text-white">
+      <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-sm border border-black/10 bg-[rgba(17,24,39,0.96)] text-[10px] font-semibold uppercase tracking-[0.18em] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
         {windowMark || title.slice(0, 2)}
       </div>
       <div class="min-w-0">
@@ -602,16 +604,16 @@
         </span>
       {/if}
       <button
-        class="flex h-7 w-7 items-center justify-center rounded-sm border border-black/10 bg-white/82 text-xs text-enterprise-text-secondary shadow-enterprise transition hover:bg-white hover:text-enterprise-text-primary"
+        class="window-control-button flex h-8 w-10 items-center justify-center rounded-none border-0 bg-transparent text-xs text-enterprise-text-secondary shadow-none transition"
         onpointerdown={(event) => event.stopPropagation()}
         onclick={() => moduleManager.toggleMinimize(moduleId)}
         aria-label="Minimize window"
         title="Minimize"
       >
-        <span aria-hidden="true">-</span>
+        <span aria-hidden="true">_</span>
       </button>
       <button
-        class="flex h-7 w-7 items-center justify-center rounded-sm border border-black/10 bg-white/82 text-[11px] text-enterprise-text-secondary shadow-enterprise transition hover:bg-white hover:text-enterprise-text-primary"
+        class="window-control-button flex h-8 w-10 items-center justify-center rounded-none border-0 bg-transparent text-[11px] text-enterprise-text-secondary shadow-none transition"
         onpointerdown={(event) => event.stopPropagation()}
         onclick={() => moduleManager.toggleMaximize(moduleId)}
         aria-label={windowState.isMaximized ? 'Restore window' : 'Maximize window'}
@@ -620,7 +622,7 @@
         <span aria-hidden="true">{windowState.isMaximized ? '<>' : '[]'}</span>
       </button>
       <button
-        class="flex h-7 w-7 items-center justify-center rounded-sm border border-[rgba(255,59,48,0.22)] bg-[rgba(255,59,48,0.10)] text-xs text-[var(--enterprise-accent)] shadow-enterprise transition hover:bg-[rgba(255,59,48,0.18)]"
+        class="window-control-button window-control-button-danger flex h-8 w-12 items-center justify-center rounded-none border-0 bg-transparent text-xs shadow-none transition"
         onpointerdown={(event) => event.stopPropagation()}
         onclick={() => moduleManager.closeModule(moduleId)}
         aria-label="Close window"
@@ -632,7 +634,7 @@
   </div>
 
   {#if toolbarActions.length > 0}
-    <div class={`window-toolbar select-none flex items-center justify-between gap-2 px-4 py-2.5 ${isDocked(frameBounds) ? 'bg-white' : ''}`}>
+    <div class={`window-toolbar select-none flex items-center justify-between gap-2 px-4 py-2 ${isDocked(frameBounds) ? 'bg-white' : ''}`}>
       <div class="flex flex-wrap items-center gap-1.5">
         {#each toolbarActions as action (action.id)}
           <button
@@ -655,7 +657,7 @@
     </div>
   {/if}
 
-  <div class={`enterprise-scrollbar flex-1 overflow-auto p-5 ${isDocked(frameBounds) ? 'bg-white' : 'bg-white/72 backdrop-blur-[6px]'}`}>
+  <div class={`enterprise-scrollbar flex-1 overflow-auto p-4 ${isDocked(frameBounds) ? 'bg-white' : 'bg-white/72 backdrop-blur-[6px]'}`}>
     {@render children()}
   </div>
 
@@ -680,7 +682,11 @@
     <div class="absolute inset-x-3 bottom-0 z-20 h-2 cursor-s-resize touch-none" onpointerdown={(event) => startResize('s', event)} role="presentation"></div>
     <div class="absolute inset-y-3 right-0 z-20 w-2 cursor-e-resize touch-none" onpointerdown={(event) => startResize('e', event)} role="presentation"></div>
     <div class="absolute inset-y-3 left-0 z-20 w-2 cursor-w-resize touch-none" onpointerdown={(event) => startResize('w', event)} role="presentation"></div>
-    <div class="absolute bottom-2 right-2 z-30 flex h-5 w-5 cursor-se-resize touch-none items-end justify-end rounded-sm border border-enterprise-border-strong bg-white/82 pr-0.5 pb-0.5 text-[10px] leading-none text-enterprise-text-muted shadow-enterprise" onpointerdown={(event) => startResize('se', event)} role="presentation">
+    <div class="absolute left-0 top-0 z-30 h-3.5 w-3.5 cursor-nw-resize touch-none" onpointerdown={(event) => startResize('nw', event)} role="presentation"></div>
+    <div class="absolute right-0 top-0 z-30 h-3.5 w-3.5 cursor-ne-resize touch-none" onpointerdown={(event) => startResize('ne', event)} role="presentation"></div>
+    <div class="absolute bottom-0 left-0 z-30 h-3.5 w-3.5 cursor-sw-resize touch-none" onpointerdown={(event) => startResize('sw', event)} role="presentation"></div>
+    <div class="absolute bottom-0 right-0 z-30 h-3.5 w-3.5 cursor-se-resize touch-none" onpointerdown={(event) => startResize('se', event)} role="presentation"></div>
+    <div class="absolute bottom-1.5 right-1.5 z-30 flex h-5 w-5 cursor-se-resize touch-none items-end justify-end rounded-sm border border-black/10 bg-white/92 pr-0.5 pb-0.5 text-[10px] leading-none text-enterprise-text-muted shadow-enterprise" onpointerdown={(event) => startResize('se', event)} role="presentation">
       //
     </div>
   {/if}
