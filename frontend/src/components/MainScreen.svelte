@@ -565,6 +565,7 @@
           title={definition.title}
           windowMark={definition.icon}
           subtitle={definition.subtitle}
+          theme={definition.theme}
           status={moduleEntry.status}
           toolbarActions={moduleEntry.toolbarActions}
           footerMeta={moduleEntry.footerMeta}

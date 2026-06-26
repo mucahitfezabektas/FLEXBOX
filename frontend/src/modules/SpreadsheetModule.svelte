@@ -4,6 +4,8 @@
   import { open } from '@tauri-apps/plugin-dialog';
   import {
     spreadsheetState,
+    type SpreadsheetColumnProfile,
+    type SpreadsheetDensityMode,
     type SpreadsheetSearchMatch,
     type SpreadsheetSortDirection
   } from '$lib/state/spreadsheetState.svelte';
@@ -24,6 +26,8 @@
   let viewportElement = $state<HTMLDivElement | null>(null);
   let viewportHeight = $state(0);
   let viewportWidth = $state(0);
+  let showInspector = $state(true);
+  let activeSearchIndex = $state(0);
 
   const activeRows = $derived(spreadsheetState.activeRows);
   const activeSourceRows = $derived(spreadsheetState.activeSourceRows);
@@ -43,9 +47,24 @@
       : 'A1'
   );
   const selectedValue = $derived(spreadsheetState.selectedCellValue);
+  const activeSheetSummary = $derived(
+    spreadsheetState.sheets[spreadsheetState.activeSheetIndex] ?? null
+  );
   const searchResultCount = $derived(spreadsheetState.searchResults.length);
+  const activeSearchMatch = $derived(
+    spreadsheetState.searchResults[activeSearchIndex] ?? null
+  );
   const isWorkbookBusy = $derived(
     spreadsheetState.isLoading || spreadsheetState.isApplyingView || spreadsheetState.isSearching
+  );
+  const selectedDisplayRowLabel = $derived(
+    selectedRow !== null ? (selectedRow + 1).toLocaleString() : '-'
+  );
+  const selectedSourceRowLabel = $derived(
+    selectedSourceRow !== null ? (selectedSourceRow + 1).toLocaleString() : '-'
+  );
+  const selectedColumnLabel = $derived(
+    selectedCol !== null ? excelColumnLabel(selectedCol + 1) : '-'
   );
   const visibleRowRange = $derived.by(() => {
     if (!spreadsheetState.hasWorkbook || spreadsheetState.totalRows === 0) {
@@ -124,6 +143,7 @@
     searchInput = '';
     filterInput = spreadsheetState.filterQuery;
     jumpToRowInput = '';
+    activeSearchIndex = 0;
     syncViewportScroll();
   }
 
@@ -155,6 +175,7 @@
       searchInput = '';
       filterInput = spreadsheetState.filterQuery;
       jumpToRowInput = '';
+      activeSearchIndex = 0;
       syncViewportScroll();
     } catch (error) {
       spreadsheetState.loadError =
@@ -171,12 +192,17 @@
     searchInput = '';
     filterInput = spreadsheetState.filterQuery;
     jumpToRowInput = '';
+    activeSearchIndex = 0;
     syncViewportScroll();
   }
 
   function resetViewport() {
     spreadsheetState.resetViewport();
     syncViewportScroll();
+  }
+
+  function toggleInspectorPanel() {
+    showInspector = !showInspector;
   }
 
   function handleScroll(event: Event) {
@@ -205,6 +231,7 @@
     searchInput = '';
     filterInput = spreadsheetState.filterQuery;
     jumpToRowInput = '';
+    activeSearchIndex = 0;
     syncViewportScroll();
   }
 
@@ -213,11 +240,13 @@
     searchInput = '';
     filterInput = spreadsheetState.filterQuery;
     jumpToRowInput = '';
+    activeSearchIndex = 0;
     syncViewportScroll();
   }
 
   async function runSearch() {
     await spreadsheetState.searchWorkbook(searchInput);
+    activeSearchIndex = 0;
   }
 
   async function runSearchForValue(value: string) {
@@ -228,6 +257,13 @@
 
     searchInput = normalized;
     await spreadsheetState.searchWorkbook(normalized);
+    activeSearchIndex = 0;
+  }
+
+  function clearSearch() {
+    searchInput = '';
+    activeSearchIndex = 0;
+    spreadsheetState.clearSearchResults();
   }
 
   async function applyFilter() {
@@ -288,6 +324,28 @@
     syncViewportScroll();
   }
 
+  function focusSearchResultAt(index: number) {
+    const total = spreadsheetState.searchResults.length;
+    if (total === 0) {
+      return;
+    }
+
+    const safeIndex = ((index % total) + total) % total;
+    activeSearchIndex = safeIndex;
+    const match = spreadsheetState.searchResults[safeIndex];
+    if (match) {
+      focusMatch(match);
+    }
+  }
+
+  function focusPreviousSearchResult() {
+    focusSearchResultAt(activeSearchIndex - 1);
+  }
+
+  function focusNextSearchResult() {
+    focusSearchResultAt(activeSearchIndex + 1);
+  }
+
   function goToVisibleRow() {
     const rowNumber = Number.parseInt(jumpToRowInput, 10);
 
@@ -301,6 +359,16 @@
 
   function focusCell(displayRowIndex: number, colIndex: number, sourceRowIndex: number) {
     spreadsheetState.setSelectedCell(displayRowIndex, colIndex, sourceRowIndex);
+  }
+
+  function setDensityMode(mode: SpreadsheetDensityMode) {
+    spreadsheetState.setDensityMode(mode);
+    syncViewportScroll();
+  }
+
+  function setColumnProfile(profile: SpreadsheetColumnProfile) {
+    spreadsheetState.setColumnProfile(profile);
+    syncViewportScroll();
   }
 
   async function copyText(value: string) {
@@ -514,6 +582,16 @@
       return;
     }
 
+    if (event.key === 'F3') {
+      event.preventDefault();
+      if (event.shiftKey) {
+        focusPreviousSearchResult();
+      } else {
+        focusNextSearchResult();
+      }
+      return;
+    }
+
     switch (event.key) {
       case 'ArrowUp':
         event.preventDefault();
@@ -583,6 +661,12 @@
   $effect(() => {
     filterInput = spreadsheetState.filterQuery;
   });
+
+  $effect(() => {
+    if (activeSearchIndex >= spreadsheetState.searchResults.length) {
+      activeSearchIndex = 0;
+    }
+  });
 </script>
 
 <section
@@ -604,9 +688,11 @@
       <span class="sheets-chip">Rows {toHumanCount(spreadsheetState.totalRows)}</span>
       <span class="sheets-chip">Source {toHumanCount(spreadsheetState.sourceTotalRows)}</span>
       <span class="sheets-chip">Cols {toHumanCount(spreadsheetState.totalCols)}</span>
-      <span class="sheets-chip">Viewport {visibleRowRange}</span>
+      <span class="sheets-chip">View {visibleRowRange}</span>
       <span class="sheets-chip">Cols {visibleColRange}</span>
       <span class="sheets-chip">{spreadsheetState.statusLabel}</span>
+      <span class="sheets-chip">{spreadsheetState.densityMode}</span>
+      <span class="sheets-chip">{spreadsheetState.columnProfile}</span>
       {#if spreadsheetState.loadError}
         <span class="sheets-chip sheets-chip-danger">{spreadsheetState.loadError}</span>
       {/if}
@@ -615,7 +701,7 @@
     <div class="flex flex-wrap items-center gap-1 border-b px-2 py-1">
       <input
         bind:value={filePathInput}
-        class="sheets-input h-8 min-w-[260px] flex-1 font-mono text-xs"
+        class="sheets-input h-8 min-w-[280px] flex-1 font-mono text-xs"
         placeholder="C:\\data\\large-workbook.xlsx"
         spellcheck="false"
         disabled={!isDesktopRuntime}
@@ -648,6 +734,13 @@
       >
         Reset View
       </button>
+      <button
+        class="sheets-button h-8 px-3 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+        onclick={toggleInspectorPanel}
+        disabled={!spreadsheetState.hasWorkbook}
+      >
+        {showInspector ? 'Hide Panel' : 'Show Panel'}
+      </button>
       <select
         class="sheets-input h-8 min-w-[220px] max-w-[320px] font-mono text-xs disabled:cursor-not-allowed disabled:opacity-50"
         value={spreadsheetState.activeSheetIndex}
@@ -664,7 +757,7 @@
 
     <div class="flex flex-wrap items-center gap-1 border-b px-2 py-1">
       <div class="sheets-name-box h-8 w-24 font-mono text-xs font-semibold">{selectedAddress}</div>
-      <div class="sheets-formula-box flex h-8 min-w-[280px] flex-1 items-center gap-2 px-2">
+      <div class="sheets-formula-box flex h-8 min-w-[260px] flex-1 items-center gap-2 px-2">
         <span class="sheets-fx">fx</span>
         <span class="min-w-0 flex-1 truncate font-mono text-xs">
           {selectedValue || 'Select a cell to inspect or copy its value.'}
@@ -711,6 +804,20 @@
           disabled={!spreadsheetState.hasWorkbook || spreadsheetState.isSearching}
         >
           {spreadsheetState.isSearching ? 'Searching' : 'Find'}
+        </button>
+        <button
+          class="sheets-button h-8 px-3 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+          onclick={focusPreviousSearchResult}
+          disabled={searchResultCount === 0}
+        >
+          Prev
+        </button>
+        <button
+          class="sheets-button h-8 px-3 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+          onclick={focusNextSearchResult}
+          disabled={searchResultCount === 0}
+        >
+          Next
         </button>
       </div>
 
@@ -770,195 +877,442 @@
   </div>
 
   {#if spreadsheetState.hasWorkbook}
-    <div class="sheets-tab-strip enterprise-scrollbar shrink-0 overflow-x-auto border-b px-1 py-1">
-      <div class="flex min-w-max items-center gap-1">
-        {#each spreadsheetState.sheets as sheet, index}
-          <button
-            class={`sheets-tab h-8 px-3 text-left ${
-              spreadsheetState.activeSheetIndex === index ? 'sheets-tab-active' : ''
-            }`}
-            onclick={() => void activateSheetTab(index)}
-            type="button"
-            title={`${sheet.name} (${sheet.total_rows.toLocaleString()} x ${sheet.total_cols.toLocaleString()})`}
-          >
-            <span class="block truncate text-xs font-semibold">{sheet.name}</span>
-            <span class="block font-mono text-[10px] text-[var(--sheet-muted)]">
-              {sheet.total_rows.toLocaleString()} x {sheet.total_cols.toLocaleString()}
-            </span>
-          </button>
-        {/each}
-      </div>
-    </div>
-
-    <div class="sheets-statusline flex flex-wrap items-center gap-x-3 gap-y-1 border-b px-2 py-1 text-[11px]">
-      <span>Filter {spreadsheetState.activeFilter.length > 0 ? spreadsheetState.activeFilter : 'none'}</span>
-      <span>
-        Sort
-        {#if spreadsheetState.sortCol !== null}
-          {excelColumnLabel(spreadsheetState.sortCol + 1)} {spreadsheetState.sortDirection}
-        {:else}
-          none
-        {/if}
-      </span>
-      <span>Chunk rows {activeStartRow + 1} - {activeStartRow + activeRowLimit}</span>
-      <span>Chunk cols {excelColumnLabel(activeStartCol + 1)} - {excelColumnLabel(activeStartCol + activeColLimit)}</span>
-      <span>Matches {searchResultCount}</span>
-      <span>Keys Arrows / Tab / Enter / PgUp / PgDn / Ctrl+C</span>
-      {#if isWorkbookBusy}
-        <span class="font-semibold text-[var(--sheet-accent-strong)]">Working...</span>
-      {/if}
-    </div>
-
-    {#if spreadsheetState.searchResults.length > 0}
-      <div class="enterprise-scrollbar shrink-0 overflow-x-auto border-b px-2 py-1">
-        <div class="flex min-w-max items-center gap-1">
-          {#each spreadsheetState.searchResults.slice(0, 18) as match}
-            <button
-              class="sheets-match px-2 py-1 font-mono text-[11px]"
-              onclick={() => focusMatch(match)}
-            >
-              {excelColumnLabel(match.col + 1)}{match.source_row + 1} [view {match.display_row + 1}]
-              {match.value.slice(0, 28)}
-            </button>
-          {/each}
-        </div>
-      </div>
-    {/if}
-
-    <div class="flex min-h-0 flex-1 flex-col">
-      <div
-        bind:this={viewportElement}
-        bind:clientHeight={viewportHeight}
-        bind:clientWidth={viewportWidth}
-        class="sheets-grid enterprise-scrollbar min-h-0 flex-1 overflow-auto outline-none"
-        onscroll={handleScroll}
-        onkeydown={handleViewportKeydown}
-        oncontextmenu={handleViewportContextMenu}
-        role="grid"
-        tabindex="0"
-      >
-        <div
-          class="min-w-max"
-          style={`height: ${spreadsheetState.totalContentHeight + spreadsheetState.rowHeight}px; width: ${
-            spreadsheetState.rowHeaderWidth + spreadsheetState.totalContentWidth
-          }px;`}
-        >
-          <div class="sheets-header sticky top-0 z-30 flex h-7 border-b">
-            <div
-              class="sheets-corner sticky left-0 z-40 flex items-center px-2 font-mono text-[10px] font-semibold uppercase tracking-[0.16em]"
-              style={`width: ${spreadsheetState.rowHeaderWidth}px; flex: 0 0 ${spreadsheetState.rowHeaderWidth}px;`}
-            >
-              Row
+    <div class="flex min-h-0 flex-1">
+      {#if showInspector}
+        <aside class="sheets-sidebar enterprise-scrollbar hidden w-[21rem] shrink-0 overflow-auto border-r xl:block">
+          <div class="sheets-panel-section border-b px-3 py-3">
+            <div class="flex items-center justify-between gap-2">
+              <div>
+                <p class="sheets-section-label">Workbook</p>
+                <h2 class="mt-1 text-sm font-semibold text-[var(--sheet-text)]">
+                  {spreadsheetState.sheetName || 'Active Sheet'}
+                </h2>
+              </div>
+              <span class="sheets-panel-badge">{isWorkbookBusy ? 'BUSY' : 'READY'}</span>
             </div>
-            <div
-              class="flex"
-              style={`width: ${spreadsheetState.totalContentWidth}px; flex: 0 0 ${spreadsheetState.totalContentWidth}px;`}
-            >
-              <div
-                aria-hidden="true"
-                style={`width: ${spreadsheetState.horizontalWindow.leftSpacerWidth}px; flex: 0 0 ${spreadsheetState.horizontalWindow.leftSpacerWidth}px;`}
-              ></div>
-              {#each activeColumnLabels as label, colOffset}
-                {@const colIndex = activeStartCol + colOffset}
-                <button
-                  class={`sheets-column-header flex h-7 shrink-0 items-center gap-2 border-r px-2 font-mono text-[10px] font-semibold tracking-[0.12em] ${
-                    spreadsheetState.sortCol === colIndex ? 'sheets-column-header-active' : ''
-                  }`}
-                  style={`width: ${spreadsheetState.columnWidth}px; flex: 0 0 ${spreadsheetState.columnWidth}px;`}
-                  onclick={() => void sortByColumn(colIndex)}
-                  oncontextmenu={(event) => handleColumnContextMenu(event, colIndex, label)}
-                  type="button"
-                  title="Left click cycles sort. Right click opens context menu."
-                >
-                  <span class="block truncate text-left uppercase">{label}</span>
-                  <span class="text-[10px] text-[var(--sheet-muted)]">{columnSortMarker(colIndex)}</span>
-                </button>
-              {/each}
-              <div
-                aria-hidden="true"
-                style={`width: ${spreadsheetState.horizontalWindow.rightSpacerWidth}px; flex: 0 0 ${spreadsheetState.horizontalWindow.rightSpacerWidth}px;`}
-              ></div>
+            <div class="mt-3 grid grid-cols-2 gap-2">
+              <div class="sheets-metric-card">
+                <span class="sheets-metric-label">Visible rows</span>
+                <span class="sheets-metric-value">{toHumanCount(spreadsheetState.totalRows)}</span>
+              </div>
+              <div class="sheets-metric-card">
+                <span class="sheets-metric-label">Source rows</span>
+                <span class="sheets-metric-value">{toHumanCount(spreadsheetState.sourceTotalRows)}</span>
+              </div>
+              <div class="sheets-metric-card">
+                <span class="sheets-metric-label">Columns</span>
+                <span class="sheets-metric-value">{toHumanCount(spreadsheetState.totalCols)}</span>
+              </div>
+              <div class="sheets-metric-card">
+                <span class="sheets-metric-label">Viewport</span>
+                <span class="sheets-metric-value">{visibleRowRange}</span>
+              </div>
+            </div>
+            {#if activeSheetSummary}
+              <div class="mt-3 rounded-sm border border-[var(--sheet-border)] bg-white/72 px-3 py-2 text-[11px] text-[var(--sheet-muted)]">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="font-semibold text-[var(--sheet-text)]">{activeSheetSummary.name}</span>
+                  <span class="font-mono">
+                    {activeSheetSummary.total_rows.toLocaleString()} x {activeSheetSummary.total_cols.toLocaleString()}
+                  </span>
+                </div>
+              </div>
+            {/if}
+          </div>
+
+          <div class="sheets-panel-section border-b px-3 py-3">
+            <p class="sheets-section-label">Presentation</p>
+            <div class="mt-3">
+              <div class="flex items-center justify-between gap-2">
+                <span class="text-[11px] font-medium text-[var(--sheet-muted)]">Density</span>
+                <span class="font-mono text-[11px] text-[var(--sheet-text)]">{spreadsheetState.densityMode}</span>
+              </div>
+              <div class="mt-2 grid grid-cols-3 gap-1">
+                {#each ['compact', 'balanced', 'comfortable'] as mode}
+                  <button
+                    class={`sheets-toggle-button ${
+                      spreadsheetState.densityMode === mode ? 'sheets-toggle-button-active' : ''
+                    }`}
+                    onclick={() => setDensityMode(mode as SpreadsheetDensityMode)}
+                    type="button"
+                  >
+                    {mode}
+                  </button>
+                {/each}
+              </div>
+            </div>
+
+            <div class="mt-3">
+              <div class="flex items-center justify-between gap-2">
+                <span class="text-[11px] font-medium text-[var(--sheet-muted)]">Column profile</span>
+                <span class="font-mono text-[11px] text-[var(--sheet-text)]">{spreadsheetState.columnProfile}</span>
+              </div>
+              <div class="mt-2 grid grid-cols-3 gap-1">
+                {#each ['narrow', 'standard', 'wide'] as profile}
+                  <button
+                    class={`sheets-toggle-button ${
+                      spreadsheetState.columnProfile === profile ? 'sheets-toggle-button-active' : ''
+                    }`}
+                    onclick={() => setColumnProfile(profile as SpreadsheetColumnProfile)}
+                    type="button"
+                  >
+                    {profile}
+                  </button>
+                {/each}
+              </div>
+            </div>
+
+            <div class="mt-3 grid grid-cols-2 gap-1">
+              <button class="sheets-button h-8 px-3 text-xs" onclick={resetViewport} type="button">
+                Reset
+              </button>
+              <button class="sheets-button h-8 px-3 text-xs" onclick={() => void clearViewOptions()} type="button">
+                Clear View
+              </button>
+              <button class="sheets-button h-8 px-3 text-xs" onclick={() => void reloadWorkbook()} type="button">
+                Reload
+              </button>
+              <button class="sheets-button h-8 px-3 text-xs" onclick={() => void toggleHeaderRowMode()} type="button">
+                {spreadsheetState.headerRowEnabled ? 'Disable Header' : 'Enable Header'}
+              </button>
             </div>
           </div>
 
-          <div style={`height: ${spreadsheetState.verticalWindow.topSpacerHeight}px;`} aria-hidden="true"></div>
+          <div class="sheets-panel-section border-b px-3 py-3">
+            <div class="flex items-center justify-between gap-2">
+              <p class="sheets-section-label">Search Navigator</p>
+              <span class="font-mono text-[11px] text-[var(--sheet-muted)]">
+                {searchResultCount > 0 ? `${activeSearchIndex + 1}/${searchResultCount}` : '0/0'}
+              </span>
+            </div>
 
-          {#each activeRows as row, rowOffset (activeStartRow + rowOffset)}
-            {@const displayRowIndex = activeStartRow + rowOffset}
-            {@const sourceRowIndex = activeSourceRows[rowOffset] ?? displayRowIndex}
-            <div
-              class={`sheets-row flex h-7 border-b ${
-                selectedRow === displayRowIndex ? 'sheets-row-selected' : ''
-              }`}
-            >
+            {#if activeSearchMatch}
               <button
-                class={`sheets-row-header sticky left-0 z-20 flex items-center border-r px-2 font-mono text-[11px] ${
-                  selectedRow === displayRowIndex ? 'sheets-row-header-selected' : ''
-                }`}
-                style={`width: ${spreadsheetState.rowHeaderWidth}px; flex: 0 0 ${spreadsheetState.rowHeaderWidth}px;`}
-                onclick={() =>
-                  focusCell(displayRowIndex, Math.max(selectedCol ?? 0, 0), sourceRowIndex)}
-                oncontextmenu={(event) =>
-                  handleRowContextMenu(event, displayRowIndex, sourceRowIndex, row)}
+                class="mt-3 w-full rounded-sm border border-[var(--sheet-accent)] bg-[var(--sheet-accent-soft)] px-3 py-2 text-left"
+                onclick={() => focusMatch(activeSearchMatch)}
                 type="button"
               >
-                {sourceRowIndex + 1}
+                <div class="flex items-center justify-between gap-2">
+                  <span class="font-mono text-xs font-semibold text-[var(--sheet-accent-strong)]">
+                    {excelColumnLabel(activeSearchMatch.col + 1)}{activeSearchMatch.source_row + 1}
+                  </span>
+                  <span class="font-mono text-[11px] text-[var(--sheet-muted)]">
+                    view {activeSearchMatch.display_row + 1}
+                  </span>
+                </div>
+                <p class="mt-1 truncate font-mono text-[11px] text-[var(--sheet-text)]">
+                  {activeSearchMatch.value}
+                </p>
               </button>
+            {/if}
 
-              <div
-                class="flex"
-                style={`width: ${spreadsheetState.totalContentWidth}px; flex: 0 0 ${spreadsheetState.totalContentWidth}px;`}
+            <div class="mt-3 flex gap-1">
+              <button
+                class="sheets-button h-8 flex-1 px-3 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                onclick={focusPreviousSearchResult}
+                disabled={searchResultCount === 0}
+                type="button"
               >
-                <div
-                  aria-hidden="true"
-                  style={`width: ${spreadsheetState.horizontalWindow.leftSpacerWidth}px; flex: 0 0 ${spreadsheetState.horizontalWindow.leftSpacerWidth}px;`}
-                ></div>
+                Previous
+              </button>
+              <button
+                class="sheets-button h-8 flex-1 px-3 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                onclick={focusNextSearchResult}
+                disabled={searchResultCount === 0}
+                type="button"
+              >
+                Next
+              </button>
+              <button
+                class="sheets-button h-8 px-3 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                onclick={clearSearch}
+                disabled={searchResultCount === 0}
+                type="button"
+              >
+                Clear
+              </button>
+            </div>
 
-                {#each row as cell, colOffset}
-                  {@const colIndex = activeStartCol + colOffset}
+            {#if spreadsheetState.searchResults.length > 0}
+              <div class="mt-3 space-y-1">
+                {#each spreadsheetState.searchResults.slice(0, 12) as match, index}
                   <button
-                    class={`sheets-cell flex h-7 shrink-0 items-center border-r px-2 font-mono text-xs ${
-                      isNumericCell(cell)
-                        ? 'justify-end text-right sheets-cell-numeric'
-                        : 'justify-start text-left'
-                    } ${
-                      selectedRow === displayRowIndex && selectedCol === colIndex
-                        ? 'sheets-cell-selected'
-                        : ''
+                    class={`sheets-search-result-item ${
+                      activeSearchIndex === index ? 'sheets-search-result-item-active' : ''
                     }`}
-                    style={`width: ${spreadsheetState.columnWidth}px; flex: 0 0 ${spreadsheetState.columnWidth}px;`}
-                    onclick={() => focusCell(displayRowIndex, colIndex, sourceRowIndex)}
-                    oncontextmenu={(event) =>
-                      handleCellContextMenu(
-                        event,
-                        displayRowIndex,
-                        colIndex,
-                        sourceRowIndex,
-                        cell ?? '',
-                        row
-                      )}
-                    title={cell ?? ''}
+                    onclick={() => focusSearchResultAt(index)}
                     type="button"
                   >
-                    <span class="block w-full truncate">{formatCellValue(cell)}</span>
+                    <span class="font-mono text-[11px] font-semibold">
+                      {excelColumnLabel(match.col + 1)}{match.source_row + 1}
+                    </span>
+                    <span class="truncate font-mono text-[11px]">{match.value}</span>
                   </button>
                 {/each}
+              </div>
+            {:else}
+              <p class="mt-3 text-[11px] leading-5 text-[var(--sheet-muted)]">
+                Search results appear here. `F3` moves to next match, `Shift+F3` moves backward.
+              </p>
+            {/if}
+          </div>
 
-                <div
-                  aria-hidden="true"
-                  style={`width: ${spreadsheetState.horizontalWindow.rightSpacerWidth}px; flex: 0 0 ${spreadsheetState.horizontalWindow.rightSpacerWidth}px;`}
-                ></div>
+          <div class="sheets-panel-section px-3 py-3">
+            <div class="flex items-center justify-between gap-2">
+              <p class="sheets-section-label">Selection Inspector</p>
+              <span class="sheets-panel-badge">{selectedAddress}</span>
+            </div>
+            <div class="mt-3 grid grid-cols-2 gap-2">
+              <div class="sheets-metric-card">
+                <span class="sheets-metric-label">View row</span>
+                <span class="sheets-metric-value">{selectedDisplayRowLabel}</span>
+              </div>
+              <div class="sheets-metric-card">
+                <span class="sheets-metric-label">Source row</span>
+                <span class="sheets-metric-value">{selectedSourceRowLabel}</span>
+              </div>
+              <div class="sheets-metric-card">
+                <span class="sheets-metric-label">Column</span>
+                <span class="sheets-metric-value">{selectedColumnLabel}</span>
+              </div>
+              <div class="sheets-metric-card">
+                <span class="sheets-metric-label">Length</span>
+                <span class="sheets-metric-value">{selectedValue.length}</span>
               </div>
             </div>
-          {/each}
+            <div class="mt-3 rounded-sm border border-[var(--sheet-border)] bg-white/78 p-3">
+              <p class="mb-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--sheet-muted)]">
+                Value Preview
+              </p>
+              <div class="max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-5 text-[var(--sheet-text)]">
+                {selectedValue || 'No active cell selected.'}
+              </div>
+            </div>
+            <div class="mt-3 flex gap-1">
+              <button
+                class="sheets-button h-8 flex-1 px-3 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                onclick={() => void copySelectionValue()}
+                disabled={!selectedValue}
+                type="button"
+              >
+                Copy Cell
+              </button>
+              <button
+                class="sheets-button h-8 flex-1 px-3 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                onclick={() => void runSearchForValue(selectedValue)}
+                disabled={!selectedValue}
+                type="button"
+              >
+                Find Value
+              </button>
+            </div>
+          </div>
+        </aside>
+      {/if}
 
-          <div style={`height: ${spreadsheetState.verticalWindow.bottomSpacerHeight}px;`} aria-hidden="true"></div>
+      <div class="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div class="sheets-tab-strip enterprise-scrollbar shrink-0 overflow-x-auto border-b px-1 py-1">
+          <div class="flex min-w-max items-center gap-1">
+            {#each spreadsheetState.sheets as sheet, index}
+              <button
+                class={`sheets-tab h-8 px-3 text-left ${
+                  spreadsheetState.activeSheetIndex === index ? 'sheets-tab-active' : ''
+                }`}
+                onclick={() => void activateSheetTab(index)}
+                type="button"
+                title={`${sheet.name} (${sheet.total_rows.toLocaleString()} x ${sheet.total_cols.toLocaleString()})`}
+              >
+                <span class="block truncate text-xs font-semibold">{sheet.name}</span>
+                <span class="block font-mono text-[10px] text-[var(--sheet-muted)]">
+                  {sheet.total_rows.toLocaleString()} x {sheet.total_cols.toLocaleString()}
+                </span>
+              </button>
+            {/each}
+          </div>
+        </div>
+
+        <div class="sheets-statusline flex flex-wrap items-center justify-between gap-2 border-b px-2 py-1 text-[11px]">
+          <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span>Filter {spreadsheetState.activeFilter.length > 0 ? spreadsheetState.activeFilter : 'none'}</span>
+            <span>
+              Sort
+              {#if spreadsheetState.sortCol !== null}
+                {excelColumnLabel(spreadsheetState.sortCol + 1)} {spreadsheetState.sortDirection}
+              {:else}
+                none
+              {/if}
+            </span>
+            <span>Chunk rows {activeStartRow + 1} - {activeStartRow + activeRowLimit}</span>
+            <span>Chunk cols {excelColumnLabel(activeStartCol + 1)} - {excelColumnLabel(activeStartCol + activeColLimit)}</span>
+            <span>Matches {searchResultCount}</span>
+            <span>Keys Arrows / Tab / Enter / PgUp / PgDn / F3 / Ctrl+C</span>
+          </div>
+          {#if isWorkbookBusy}
+            <span class="font-semibold text-[var(--sheet-accent-strong)]">Working...</span>
+          {/if}
+        </div>
+
+        <div class="flex min-h-0 flex-1 flex-col">
+          <div
+            bind:this={viewportElement}
+            bind:clientHeight={viewportHeight}
+            bind:clientWidth={viewportWidth}
+            class="sheets-grid enterprise-scrollbar min-h-0 flex-1 overflow-auto outline-none"
+            onscroll={handleScroll}
+            onkeydown={handleViewportKeydown}
+            oncontextmenu={handleViewportContextMenu}
+            role="grid"
+            tabindex="0"
+          >
+            <div
+              class="min-w-max"
+              style={`height: ${spreadsheetState.totalContentHeight + spreadsheetState.rowHeight}px; width: ${
+                spreadsheetState.rowHeaderWidth + spreadsheetState.totalContentWidth
+              }px;`}
+            >
+              <div class="sheets-header sticky top-0 z-30 flex" style={`height: ${spreadsheetState.rowHeight}px;`}>
+                <div
+                  class="sheets-corner sticky left-0 z-40 flex items-center px-2 font-mono text-[10px] font-semibold uppercase tracking-[0.16em]"
+                  style={`width: ${spreadsheetState.rowHeaderWidth}px; flex: 0 0 ${spreadsheetState.rowHeaderWidth}px;`}
+                >
+                  Row
+                </div>
+                <div
+                  class="flex"
+                  style={`width: ${spreadsheetState.totalContentWidth}px; flex: 0 0 ${spreadsheetState.totalContentWidth}px;`}
+                >
+                  <div
+                    aria-hidden="true"
+                    style={`width: ${spreadsheetState.horizontalWindow.leftSpacerWidth}px; flex: 0 0 ${spreadsheetState.horizontalWindow.leftSpacerWidth}px;`}
+                  ></div>
+                  {#each activeColumnLabels as label, colOffset}
+                    {@const colIndex = activeStartCol + colOffset}
+                    <button
+                      class={`sheets-column-header flex shrink-0 items-center gap-2 border-r px-2 font-mono text-[10px] font-semibold tracking-[0.12em] ${
+                        spreadsheetState.sortCol === colIndex ? 'sheets-column-header-active' : ''
+                      }`}
+                      style={`width: ${spreadsheetState.columnWidth}px; height: ${spreadsheetState.rowHeight}px; flex: 0 0 ${spreadsheetState.columnWidth}px;`}
+                      onclick={() => void sortByColumn(colIndex)}
+                      oncontextmenu={(event) => handleColumnContextMenu(event, colIndex, label)}
+                      type="button"
+                      title="Left click cycles sort. Right click opens context menu."
+                    >
+                      <span class="block truncate text-left uppercase">{label}</span>
+                      <span class="text-[10px] text-[var(--sheet-muted)]">{columnSortMarker(colIndex)}</span>
+                    </button>
+                  {/each}
+                  <div
+                    aria-hidden="true"
+                    style={`width: ${spreadsheetState.horizontalWindow.rightSpacerWidth}px; flex: 0 0 ${spreadsheetState.horizontalWindow.rightSpacerWidth}px;`}
+                  ></div>
+                </div>
+              </div>
+
+              <div style={`height: ${spreadsheetState.verticalWindow.topSpacerHeight}px;`} aria-hidden="true"></div>
+
+              {#each activeRows as row, rowOffset (activeStartRow + rowOffset)}
+                {@const displayRowIndex = activeStartRow + rowOffset}
+                {@const sourceRowIndex = activeSourceRows[rowOffset] ?? displayRowIndex}
+                <div
+                  class={`sheets-row flex border-b ${
+                    selectedRow === displayRowIndex ? 'sheets-row-selected' : ''
+                  }`}
+                  style={`height: ${spreadsheetState.rowHeight}px;`}
+                >
+                  <button
+                    class={`sheets-row-header sticky left-0 z-20 flex items-center border-r px-2 font-mono text-[11px] ${
+                      selectedRow === displayRowIndex ? 'sheets-row-header-selected' : ''
+                    }`}
+                    style={`width: ${spreadsheetState.rowHeaderWidth}px; height: ${spreadsheetState.rowHeight}px; flex: 0 0 ${spreadsheetState.rowHeaderWidth}px;`}
+                    onclick={() =>
+                      focusCell(displayRowIndex, Math.max(selectedCol ?? 0, 0), sourceRowIndex)}
+                    oncontextmenu={(event) =>
+                      handleRowContextMenu(event, displayRowIndex, sourceRowIndex, row)}
+                    type="button"
+                  >
+                    {sourceRowIndex + 1}
+                  </button>
+
+                  <div
+                    class="flex"
+                    style={`width: ${spreadsheetState.totalContentWidth}px; flex: 0 0 ${spreadsheetState.totalContentWidth}px;`}
+                  >
+                    <div
+                      aria-hidden="true"
+                      style={`width: ${spreadsheetState.horizontalWindow.leftSpacerWidth}px; flex: 0 0 ${spreadsheetState.horizontalWindow.leftSpacerWidth}px;`}
+                    ></div>
+
+                    {#each row as cell, colOffset}
+                      {@const colIndex = activeStartCol + colOffset}
+                      <button
+                        class={`sheets-cell flex shrink-0 items-center border-r px-2 font-mono text-xs ${
+                          isNumericCell(cell)
+                            ? 'justify-end text-right sheets-cell-numeric'
+                            : 'justify-start text-left'
+                        } ${
+                          selectedRow === displayRowIndex && selectedCol === colIndex
+                            ? 'sheets-cell-selected'
+                            : ''
+                        }`}
+                        style={`width: ${spreadsheetState.columnWidth}px; height: ${spreadsheetState.rowHeight}px; flex: 0 0 ${spreadsheetState.columnWidth}px;`}
+                        onclick={() => focusCell(displayRowIndex, colIndex, sourceRowIndex)}
+                        oncontextmenu={(event) =>
+                          handleCellContextMenu(
+                            event,
+                            displayRowIndex,
+                            colIndex,
+                            sourceRowIndex,
+                            cell ?? '',
+                            row
+                          )}
+                        title={cell ?? ''}
+                        type="button"
+                      >
+                        <span class="block w-full truncate">{formatCellValue(cell)}</span>
+                      </button>
+                    {/each}
+
+                    <div
+                      aria-hidden="true"
+                      style={`width: ${spreadsheetState.horizontalWindow.rightSpacerWidth}px; flex: 0 0 ${spreadsheetState.horizontalWindow.rightSpacerWidth}px;`}
+                    ></div>
+                  </div>
+                </div>
+              {/each}
+
+              <div style={`height: ${spreadsheetState.verticalWindow.bottomSpacerHeight}px;`} aria-hidden="true"></div>
+            </div>
+          </div>
+
+          <div class="sheets-footer-bar flex flex-wrap items-center justify-between gap-2 border-t px-2 py-1 text-[11px]">
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+              <span>Cell {selectedAddress}</span>
+              <span>View row {selectedDisplayRowLabel}</span>
+              <span>Source row {selectedSourceRowLabel}</span>
+              <span>Column {selectedColumnLabel}</span>
+              <span>Chunk cache active</span>
+            </div>
+            <div class="flex items-center gap-1">
+              <span class="text-[var(--sheet-muted)]">Density</span>
+              {#each ['compact', 'balanced', 'comfortable'] as mode}
+                <button
+                  class={`sheets-inline-toggle ${
+                    spreadsheetState.densityMode === mode ? 'sheets-inline-toggle-active' : ''
+                  }`}
+                  onclick={() => setDensityMode(mode as SpreadsheetDensityMode)}
+                  type="button"
+                >
+                  {mode}
+                </button>
+              {/each}
+            </div>
+          </div>
         </div>
       </div>
     </div>
   {:else}
     <div class="flex min-h-0 flex-1 items-center justify-center p-4">
-      <div class="sheets-empty max-w-3xl border px-6 py-6">
+      <div class="sheets-empty max-w-4xl border px-6 py-6">
         <p class="text-[10px] font-semibold uppercase tracking-[0.22em] text-[var(--sheet-muted)]">
           Spreadsheet Virtualization
         </p>
@@ -970,6 +1324,20 @@
           Svelte side. Sorting, filtering and header-row transforms stay in the backend so very
           large sheets remain responsive.
         </p>
+        <div class="mt-5 grid gap-3 sm:grid-cols-3">
+          <div class="sheets-empty-card">
+            <span class="sheets-metric-label">Runtime</span>
+            <span class="sheets-metric-value">{isDesktopRuntime ? 'Tauri' : 'Browser'}</span>
+          </div>
+          <div class="sheets-empty-card">
+            <span class="sheets-metric-label">Virtualization</span>
+            <span class="sheets-metric-value">Row + Column</span>
+          </div>
+          <div class="sheets-empty-card">
+            <span class="sheets-metric-label">Backend</span>
+            <span class="sheets-metric-value">Rust Memory</span>
+          </div>
+        </div>
         <div class="mt-4 rounded-sm border border-[var(--sheet-border)] bg-[var(--sheet-surface-strong)] px-3 py-2 font-mono text-xs text-[var(--sheet-muted)]">
           Example path: C:\data\finance-ledger.xlsx
         </div>
@@ -1008,7 +1376,8 @@
     --sheet-accent-strong: #4f563e;
     --sheet-accent-soft: rgba(111, 116, 88, 0.16);
     background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0)) 0 0 / 100% 60px
+      radial-gradient(circle at top left, rgba(255, 255, 255, 0.58), transparent 26%),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.52), rgba(255, 255, 255, 0)) 0 0 / 100% 70px
         no-repeat,
       var(--sheet-bg);
     border-color: var(--sheet-border);
@@ -1018,7 +1387,8 @@
   .sheets-toolbar,
   .sheets-tab-strip,
   .sheets-statusline,
-  .sheets-runtime-banner {
+  .sheets-runtime-banner,
+  .sheets-footer-bar {
     background: rgba(250, 248, 239, 0.96);
     border-color: var(--sheet-border);
   }
@@ -1029,6 +1399,27 @@
     border-bottom: 1px solid rgba(138, 75, 17, 0.18);
   }
 
+  .sheets-sidebar {
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0)) 0 0 / 100% 80px
+        no-repeat,
+      rgba(244, 241, 229, 0.94);
+    border-color: var(--sheet-border);
+  }
+
+  .sheets-panel-section {
+    border-color: rgba(169, 159, 130, 0.48);
+  }
+
+  .sheets-section-label {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    color: var(--sheet-muted);
+  }
+
+  .sheets-panel-badge,
   .sheets-chip {
     display: inline-flex;
     align-items: center;
@@ -1036,8 +1427,8 @@
     border: 1px solid var(--sheet-border);
     background: rgba(255, 255, 255, 0.75);
     color: var(--sheet-muted);
-    border-radius: 0.2rem;
-    padding: 0 0.45rem;
+    border-radius: 0.22rem;
+    padding: 0 0.5rem;
     font-size: 11px;
     white-space: nowrap;
   }
@@ -1065,8 +1456,11 @@
   .sheets-name-box,
   .sheets-formula-box,
   .sheets-tab,
-  .sheets-match {
-    border-radius: 0.2rem;
+  .sheets-match,
+  .sheets-toggle-button,
+  .sheets-inline-toggle,
+  .sheets-search-result-item {
+    border-radius: 0.22rem;
     border: 1px solid var(--sheet-border);
   }
 
@@ -1088,15 +1482,21 @@
   }
 
   .sheets-button,
-  .sheets-match {
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(244, 240, 225, 0.88));
+  .sheets-match,
+  .sheets-toggle-button,
+  .sheets-inline-toggle,
+  .sheets-search-result-item {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(244, 240, 225, 0.9));
     color: var(--sheet-text);
   }
 
   .sheets-button:hover,
   .sheets-match:hover,
-  .sheets-tab:hover {
-    background: rgba(255, 255, 255, 0.96);
+  .sheets-tab:hover,
+  .sheets-toggle-button:hover,
+  .sheets-inline-toggle:hover,
+  .sheets-search-result-item:hover {
+    background: rgba(255, 255, 255, 0.98);
   }
 
   .sheets-button-primary {
@@ -1152,7 +1552,8 @@
       0 1px 0 rgba(255, 255, 255, 0.6);
   }
 
-  .sheets-statusline {
+  .sheets-statusline,
+  .sheets-footer-bar {
     color: var(--sheet-muted);
   }
 
@@ -1162,7 +1563,7 @@
 
   .sheets-grid {
     background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0)) 0 0 / 100% 48px
+      linear-gradient(180deg, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0)) 0 0 / 100% 52px
         no-repeat,
       var(--sheet-surface);
     scrollbar-color: #b3ad90 transparent;
@@ -1192,12 +1593,16 @@
     background: rgba(255, 255, 255, 0.88);
   }
 
+  .sheets-row:nth-child(even) {
+    background: rgba(251, 250, 244, 0.9);
+  }
+
   .sheets-row:hover {
-    background: rgba(247, 244, 233, 0.9);
+    background: rgba(247, 244, 233, 0.96);
   }
 
   .sheets-row-selected {
-    background: rgba(229, 224, 206, 0.72);
+    background: rgba(229, 224, 206, 0.78) !important;
   }
 
   .sheets-row-header-selected {
@@ -1217,8 +1622,61 @@
   }
 
   .sheets-cell-selected {
-    background: rgba(223, 218, 197, 0.95);
+    background: rgba(223, 218, 197, 0.96);
     box-shadow: inset 0 0 0 1px var(--sheet-accent-strong);
+  }
+
+  .sheets-metric-card,
+  .sheets-empty-card {
+    display: flex;
+    min-height: 4rem;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 0.35rem;
+    border-radius: 0.28rem;
+    border: 1px solid var(--sheet-border);
+    background: rgba(255, 255, 255, 0.76);
+    padding: 0.75rem;
+  }
+
+  .sheets-metric-label {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    color: var(--sheet-muted);
+  }
+
+  .sheets-metric-value {
+    font-family: 'IBM Plex Mono', 'Cascadia Code', 'SFMono-Regular', Consolas, monospace;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--sheet-text);
+  }
+
+  .sheets-toggle-button,
+  .sheets-inline-toggle {
+    height: 2rem;
+    padding: 0 0.6rem;
+    font-size: 11px;
+    text-transform: capitalize;
+  }
+
+  .sheets-toggle-button-active,
+  .sheets-inline-toggle-active,
+  .sheets-search-result-item-active {
+    border-color: var(--sheet-accent);
+    background: var(--sheet-accent-soft);
+    color: var(--sheet-accent-strong);
+  }
+
+  .sheets-search-result-item {
+    display: flex;
+    width: 100%;
+    flex-direction: column;
+    gap: 0.2rem;
+    padding: 0.55rem 0.65rem;
+    text-align: left;
   }
 
   .sheets-empty {

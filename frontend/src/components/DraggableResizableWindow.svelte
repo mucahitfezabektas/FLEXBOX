@@ -9,7 +9,7 @@
     WindowStatusTone,
     WindowToolbarAction
   } from '$lib/types/windowChrome';
-  import type { WindowBounds } from '$lib/modules/types';
+  import type { ModuleTheme, WindowBounds } from '$lib/modules/types';
 
   type ResizeHandle = 'n' | 's' | 'e' | 'w' | 'nw' | 'ne' | 'sw' | 'se';
 
@@ -43,6 +43,7 @@
     title,
     windowMark = '',
     subtitle = '',
+    theme = 'default',
     status = null,
     toolbarActions = [],
     footerMeta = [],
@@ -53,6 +54,7 @@
     title: string;
     windowMark?: string;
     subtitle?: string;
+    theme?: ModuleTheme;
     status?: WindowStatus | null;
     toolbarActions?: WindowToolbarAction[];
     footerMeta?: WindowFooterMeta[];
@@ -554,6 +556,8 @@
 <div
   in:windowEnter
   class={`window-panel absolute flex flex-col overflow-hidden ${
+    theme === 'sheets' ? 'window-theme-sheets' : 'window-theme-default'
+  } ${
     shouldAnimateFrame
       ? 'transition-[transform,width,height,opacity,border-color,box-shadow] duration-180 ease-[cubic-bezier(0.22,1,0.36,1)]'
       : 'transition-[border-color,box-shadow] duration-100'
@@ -582,11 +586,11 @@
   aria-label={title}
   tabindex="-1"
 >
-  <div class="absolute inset-x-0 top-0 h-[2px] bg-[linear-gradient(90deg,rgba(59,130,246,0.88),rgba(59,130,246,0.08))]" aria-hidden="true"></div>
+  <div class="window-theme-accent absolute inset-x-0 top-0 h-[2px]" aria-hidden="true"></div>
 
   <div class={`window-header select-none flex h-11 cursor-grab items-center justify-between gap-3 px-3.5 active:cursor-grabbing ${isDocked(frameBounds) ? 'bg-white' : ''}`} onpointerdown={startDrag} ondblclick={handleHeaderDoubleClick} role="presentation">
     <div class="flex min-w-0 items-center gap-3">
-      <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-sm border border-black/10 bg-[rgba(17,24,39,0.96)] text-[10px] font-semibold uppercase tracking-[0.18em] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
+      <div class="window-theme-mark flex h-7 w-7 shrink-0 items-center justify-center rounded-sm border text-[10px] font-semibold uppercase tracking-[0.18em] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
         {windowMark || title.slice(0, 2)}
       </div>
       <div class="min-w-0">
@@ -691,3 +695,42 @@
     </div>
   {/if}
 </div>
+
+<style>
+  .window-theme-default {
+    --module-window-accent-strong: rgba(59, 130, 246, 0.88);
+    --module-window-accent-soft: rgba(59, 130, 246, 0.08);
+    --module-window-mark-bg: rgba(17, 24, 39, 0.96);
+    --module-window-mark-border: rgba(0, 0, 0, 0.1);
+  }
+
+  .window-theme-sheets {
+    --module-window-accent-strong: rgba(111, 116, 88, 0.96);
+    --module-window-accent-soft: rgba(111, 116, 88, 0.12);
+    --module-window-mark-bg: linear-gradient(180deg, #73795b 0%, #565c44 100%);
+    --module-window-mark-border: rgba(79, 86, 62, 0.24);
+  }
+
+  .window-theme-accent {
+    background: linear-gradient(
+      90deg,
+      var(--module-window-accent-strong),
+      var(--module-window-accent-soft)
+    );
+  }
+
+  .window-theme-mark {
+    border-color: var(--module-window-mark-border);
+    background: var(--module-window-mark-bg);
+  }
+
+  .window-theme-sheets .window-header {
+    background:
+      linear-gradient(180deg, rgba(251, 250, 244, 0.98) 0%, rgba(240, 237, 224, 0.98) 100%);
+  }
+
+  .window-theme-sheets .window-toolbar,
+  .window-theme-sheets .window-footer {
+    background: rgba(244, 241, 229, 0.92);
+  }
+</style>

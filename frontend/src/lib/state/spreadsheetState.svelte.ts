@@ -1,6 +1,8 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 
 export type SpreadsheetSortDirection = 'asc' | 'desc';
+export type SpreadsheetDensityMode = 'compact' | 'balanced' | 'comfortable';
+export type SpreadsheetColumnProfile = 'narrow' | 'standard' | 'wide';
 
 export interface SpreadsheetSheetSummary {
   name: string;
@@ -206,6 +208,8 @@ class SpreadsheetState {
   columnChunkSize = $state(8);
   overscanRows = $state(24);
   overscanCols = $state(3);
+  densityMode = $state<SpreadsheetDensityMode>('balanced');
+  columnProfile = $state<SpreadsheetColumnProfile>('standard');
   isLoading = $state(false);
   isSearching = $state(false);
   isApplyingView = $state(false);
@@ -331,6 +335,46 @@ class SpreadsheetState {
     this.selectedRow = null;
     this.selectedSourceRow = null;
     this.selectedCol = null;
+    void this.scheduleViewportSync();
+  }
+
+  setDensityMode(mode: SpreadsheetDensityMode) {
+    this.densityMode = mode;
+
+    if (mode === 'compact') {
+      this.rowHeight = 24;
+      this.rowHeaderWidth = 64;
+      this.overscanRows = 28;
+    } else if (mode === 'comfortable') {
+      this.rowHeight = 34;
+      this.rowHeaderWidth = 84;
+      this.overscanRows = 18;
+    } else {
+      this.rowHeight = 28;
+      this.rowHeaderWidth = 72;
+      this.overscanRows = 24;
+    }
+
+    void this.scheduleViewportSync();
+  }
+
+  setColumnProfile(profile: SpreadsheetColumnProfile) {
+    this.columnProfile = profile;
+
+    if (profile === 'narrow') {
+      this.columnWidth = 120;
+      this.columnChunkSize = 10;
+      this.overscanCols = 4;
+    } else if (profile === 'wide') {
+      this.columnWidth = 192;
+      this.columnChunkSize = 6;
+      this.overscanCols = 2;
+    } else {
+      this.columnWidth = 144;
+      this.columnChunkSize = 8;
+      this.overscanCols = 3;
+    }
+
     void this.scheduleViewportSync();
   }
 
@@ -478,6 +522,11 @@ class SpreadsheetState {
     } finally {
       this.isSearching = false;
     }
+  }
+
+  clearSearchResults() {
+    this.searchQuery = '';
+    this.searchResults = [];
   }
 
   focusCell(displayRow: number, colIndex: number, sourceRow: number | null = null) {

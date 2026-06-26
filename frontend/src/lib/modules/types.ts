@@ -1,5 +1,6 @@
 export type ModuleId = 'auth' | 'customize' | 'spreadsheet' | 'empty';
 export type ModuleGroup = 'Security' | 'Configuration' | 'Data' | 'Framework';
+export type ModuleTheme = 'default' | 'sheets';
 
 export interface WindowBounds {
   x: number;
@@ -15,6 +16,7 @@ export interface ModuleDefinition {
   subtitle: string;
   description: string;
   group: ModuleGroup;
+  theme?: ModuleTheme;
   icon: string;
   keywords: string[];
   defaultBounds: WindowBounds & {

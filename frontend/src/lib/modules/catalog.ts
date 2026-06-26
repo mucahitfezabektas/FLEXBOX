@@ -77,6 +77,7 @@ export const moduleCatalog = [
     subtitle: 'High-density Excel virtualization',
     description: 'Rust tarafinda tutulan dev Excel tablolarini sanal viewport ile kaydirsiz gösterim.',
     group: 'Data',
+    theme: 'sheets',
     icon: 'SS',
     keywords: ['excel', 'spreadsheet', 'xlsx', 'virtualization', 'data-grid'],
     defaultBounds: {
