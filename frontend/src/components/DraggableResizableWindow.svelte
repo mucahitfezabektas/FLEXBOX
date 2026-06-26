@@ -588,98 +588,84 @@
 >
   <div class="window-theme-accent absolute inset-x-0 top-0 h-[2px]" aria-hidden="true"></div>
 
-  <div class={`window-header select-none flex h-11 cursor-grab items-center justify-between gap-3 px-3.5 active:cursor-grabbing ${isDocked(frameBounds) ? 'bg-white' : ''}`} onpointerdown={startDrag} ondblclick={handleHeaderDoubleClick} role="presentation">
-    <div class="flex min-w-0 items-center gap-3">
-      <div class="window-theme-mark flex h-7 w-7 shrink-0 items-center justify-center rounded-sm border text-[10px] font-semibold uppercase tracking-[0.18em] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
-        {windowMark || title.slice(0, 2)}
+  <div class={`window-header select-none flex flex-col ${isDocked(frameBounds) ? 'bg-white' : ''}`} onpointerdown={startDrag} ondblclick={handleHeaderDoubleClick} role="presentation">
+    <div class="flex h-11 cursor-grab items-center justify-between gap-3 px-3.5 active:cursor-grabbing">
+      <div class="flex min-w-0 items-center gap-3">
+        <div class="window-theme-mark flex h-7 w-7 shrink-0 items-center justify-center rounded-sm border text-[10px] font-semibold uppercase tracking-[0.18em] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
+          {windowMark || title.slice(0, 2)}
+        </div>
+        <div class="min-w-0">
+          <p class="truncate text-sm font-semibold text-enterprise-text-primary">{title}</p>
+          {#if subtitle}
+            <p class="truncate text-data-xs text-enterprise-text-muted">{subtitle}</p>
+          {/if}
+        </div>
       </div>
-      <div class="min-w-0">
-        <p class="truncate text-sm font-semibold text-enterprise-text-primary">{title}</p>
-        {#if subtitle}
-          <p class="truncate text-data-xs text-enterprise-text-muted">{subtitle}</p>
+
+      <div class="flex items-center gap-2">
+        {#if status}
+          <span class={`${toneClass(status.tone)} rounded-sm px-2.5 py-1 text-data-xs font-medium`}>
+            {status.label}
+          </span>
         {/if}
+        <button
+          class="window-control-button flex h-8 w-10 items-center justify-center rounded-none border-0 bg-transparent text-xs text-enterprise-text-secondary shadow-none transition"
+          onpointerdown={(event) => event.stopPropagation()}
+          onclick={() => moduleManager.toggleMinimize(moduleId)}
+          aria-label="Minimize window"
+          title="Minimize"
+        >
+          <span aria-hidden="true">_</span>
+        </button>
+        <button
+          class="window-control-button flex h-8 w-10 items-center justify-center rounded-none border-0 bg-transparent text-[11px] text-enterprise-text-secondary shadow-none transition"
+          onpointerdown={(event) => event.stopPropagation()}
+          onclick={() => moduleManager.toggleMaximize(moduleId)}
+          aria-label={windowState.isMaximized ? 'Restore window' : 'Maximize window'}
+          title={windowState.isMaximized ? 'Restore' : 'Maximize'}
+        >
+          <span aria-hidden="true">{windowState.isMaximized ? '<>' : '[]'}</span>
+        </button>
+        <button
+          class="window-control-button window-control-button-danger flex h-8 w-12 items-center justify-center rounded-none border-0 bg-transparent text-xs shadow-none transition"
+          onpointerdown={(event) => event.stopPropagation()}
+          onclick={() => moduleManager.closeModule(moduleId)}
+          aria-label="Close window"
+          title="Close"
+        >
+          <span aria-hidden="true">x</span>
+        </button>
       </div>
     </div>
 
-    <div class="flex items-center gap-2">
-      {#if status}
-        <span class={`${toneClass(status.tone)} rounded-sm px-2.5 py-1 text-data-xs font-medium`}>
-          {status.label}
-        </span>
-      {/if}
-      <button
-        class="window-control-button flex h-8 w-10 items-center justify-center rounded-none border-0 bg-transparent text-xs text-enterprise-text-secondary shadow-none transition"
-        onpointerdown={(event) => event.stopPropagation()}
-        onclick={() => moduleManager.toggleMinimize(moduleId)}
-        aria-label="Minimize window"
-        title="Minimize"
-      >
-        <span aria-hidden="true">_</span>
-      </button>
-      <button
-        class="window-control-button flex h-8 w-10 items-center justify-center rounded-none border-0 bg-transparent text-[11px] text-enterprise-text-secondary shadow-none transition"
-        onpointerdown={(event) => event.stopPropagation()}
-        onclick={() => moduleManager.toggleMaximize(moduleId)}
-        aria-label={windowState.isMaximized ? 'Restore window' : 'Maximize window'}
-        title={windowState.isMaximized ? 'Restore' : 'Maximize'}
-      >
-        <span aria-hidden="true">{windowState.isMaximized ? '<>' : '[]'}</span>
-      </button>
-      <button
-        class="window-control-button window-control-button-danger flex h-8 w-12 items-center justify-center rounded-none border-0 bg-transparent text-xs shadow-none transition"
-        onpointerdown={(event) => event.stopPropagation()}
-        onclick={() => moduleManager.closeModule(moduleId)}
-        aria-label="Close window"
-        title="Close"
-      >
-        <span aria-hidden="true">x</span>
-      </button>
-    </div>
+    {#if toolbarActions.length > 0}
+      <div class={`window-toolbar select-none flex items-center justify-between gap-2 border-t px-4 py-2 ${isDocked(frameBounds) ? 'bg-white' : ''}`}>
+        <div class="flex flex-wrap items-center gap-1.5">
+          {#each toolbarActions as action (action.id)}
+            <button
+              class={`rounded-sm px-3 py-1.5 text-data-xs font-medium ${
+                action.kind === 'primary'
+                  ? 'enterprise-button-primary'
+                  : action.kind === 'danger'
+                    ? 'enterprise-button-danger'
+                    : 'toolbar-button'
+              }`}
+              onclick={() => onToolbarAction?.(action.id)}
+            >
+              {action.label}
+            </button>
+          {/each}
+        </div>
+        <div class="data-code text-data-xs text-enterprise-text-muted">
+          {frameBounds.width}x{frameBounds.height}
+        </div>
+      </div>
+    {/if}
   </div>
-
-  {#if toolbarActions.length > 0}
-    <div class={`window-toolbar select-none flex items-center justify-between gap-2 px-4 py-2 ${isDocked(frameBounds) ? 'bg-white' : ''}`}>
-      <div class="flex flex-wrap items-center gap-1.5">
-        {#each toolbarActions as action (action.id)}
-          <button
-            class={`rounded-sm px-3 py-1.5 text-data-xs font-medium ${
-              action.kind === 'primary'
-                ? 'enterprise-button-primary'
-                : action.kind === 'danger'
-                  ? 'enterprise-button-danger'
-                  : 'toolbar-button'
-            }`}
-            onclick={() => onToolbarAction?.(action.id)}
-          >
-            {action.label}
-          </button>
-        {/each}
-      </div>
-      <div class="data-code text-data-xs text-enterprise-text-muted">
-        {frameBounds.width}x{frameBounds.height}
-      </div>
-    </div>
-  {/if}
 
   <div class={`enterprise-scrollbar flex-1 overflow-auto p-4 ${isDocked(frameBounds) ? 'bg-white' : 'bg-white/72 backdrop-blur-[6px]'}`}>
     {@render children()}
   </div>
-
-  {#if footerMeta.length > 0}
-    <div class={`window-footer select-none flex items-center justify-between gap-2 px-4 py-2.5 ${isDocked(frameBounds) ? 'bg-white' : ''}`}>
-      <div class="flex flex-wrap items-center gap-3 text-data-xs text-enterprise-text-muted">
-        {#each footerMeta as meta (meta.label)}
-          <span>
-            <span class="uppercase tracking-[0.14em]">{meta.label}</span>
-            <span class="data-code ml-1 text-enterprise-text-secondary">{meta.value}</span>
-          </span>
-        {/each}
-      </div>
-      <div class="data-code text-data-xs text-enterprise-text-muted">
-        {windowState.isMaximized ? 'MAXIMIZED' : 'WINDOWED'}
-      </div>
-    </div>
-  {/if}
 
   {#if !windowState.isMaximized}
     <div class="absolute inset-x-3 top-0 z-20 h-2 cursor-n-resize touch-none" onpointerdown={(event) => startResize('n', event)} role="presentation"></div>
@@ -729,8 +715,7 @@
       linear-gradient(180deg, rgba(251, 250, 244, 0.98) 0%, rgba(240, 237, 224, 0.98) 100%);
   }
 
-  .window-theme-sheets .window-toolbar,
-  .window-theme-sheets .window-footer {
+  .window-theme-sheets .window-toolbar {
     background: rgba(244, 241, 229, 0.92);
   }
 </style>

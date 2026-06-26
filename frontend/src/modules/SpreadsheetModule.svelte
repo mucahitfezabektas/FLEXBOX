@@ -1105,44 +1105,46 @@
     </div>
   {/if}
 
-  <div class="sheets-hero shrink-0 border-b px-4 py-3">
-    <div class="flex flex-wrap items-start justify-between gap-3">
-      <div class="min-w-0">
-        <div class="flex items-center gap-2">
-          <span class="sheets-brand-badge">SS</span>
-          <div class="min-w-0">
-            <h1 class="truncate text-sm font-semibold tracking-tight text-[var(--sheet-text)]">
-              Spreadsheet Workbench
-            </h1>
-            <p class="text-[11px] text-[var(--sheet-muted)]">
-              High-density Excel virtualization with Rust-backed chunk streaming.
-            </p>
-          </div>
+  <div class="sheets-menubar shrink-0 border-b px-4 py-2">
+    <div class="flex flex-wrap items-center gap-2">
+      <span class="sheets-brand-badge">SS</span>
+      <div class="min-w-0 flex-1">
+        <div class="flex flex-wrap items-center gap-1.5">
+          <span class="sheets-chip sheets-chip-strong">SHEETS</span>
+          <span class="sheets-chip font-mono truncate max-w-xs">
+            {spreadsheetState.fileName || 'NO FILE'}
+          </span>
+          <span class="sheets-chip">{spreadsheetState.statusLabel}</span>
+          <span class="sheets-chip">Rows {toHumanCount(spreadsheetState.totalRows)}</span>
+          <span class="sheets-chip">Cols {toHumanCount(spreadsheetState.totalCols)}</span>
+          <span class="sheets-chip">Viewport {visibleRowRange}</span>
+          <span class="sheets-chip">Cache {spreadsheetState.cacheEntryCount}</span>
+          {#if spreadsheetState.loadError}
+            <span class="sheets-chip sheets-chip-danger">{spreadsheetState.loadError}</span>
+          {/if}
         </div>
       </div>
-      <div class="flex flex-wrap items-center gap-1">
-        <span class="sheets-chip sheets-chip-strong">SHEETS</span>
-        <span class="sheets-chip font-mono truncate max-w-xs">{spreadsheetState.fileName || "NO FILE"}</span>
-        <span class="sheets-chip">{spreadsheetState.statusLabel}</span>
-        {#if spreadsheetState.loadError}
-          <span class="sheets-chip sheets-chip-danger">{spreadsheetState.loadError}</span>
-        {/if}
-      </div>
-    </div>
-    <div class="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-[var(--sheet-muted)]">
-      <span class="sheets-chip">Rows {toHumanCount(spreadsheetState.totalRows)}</span>
-      <span class="sheets-chip">Cols {toHumanCount(spreadsheetState.totalCols)}</span>
-      <span class="sheets-chip">Viewport {visibleRowRange}</span>
-      <span class="sheets-chip">Cache {spreadsheetState.cacheEntryCount}</span>
+      <select
+        class="sheets-input h-8 min-w-[220px] font-mono text-xs"
+        value={spreadsheetState.activeSheetIndex}
+        onchange={handleSheetChange}
+        disabled={!spreadsheetState.hasWorkbook}
+      >
+        {#each spreadsheetState.sheets as sheet, index}
+          <option value={index}>
+            {sheet.name} ({sheet.total_rows.toLocaleString()})
+          </option>
+        {/each}
+      </select>
     </div>
   </div>
 
-  <div class="sheets-toolbar shrink-0 border-b">
-    <div class="sheets-toolbar-row">
+  <div class="sheets-toolbar shrink-0 border-b px-3 py-2">
+    <div class="flex flex-wrap items-center gap-2">
       <input
         bind:this={filePathInputElement}
         bind:value={filePathInput}
-        class="sheets-input h-8 min-w-[280px] flex-1 font-mono text-xs"
+        class="sheets-input h-8 min-w-[260px] flex-[1.5] font-mono text-xs"
         placeholder="Excel file path..."
         disabled={!isDesktopRuntime}
       />
@@ -1173,22 +1175,6 @@
         disabled={!spreadsheetState.hasWorkbook}
         >{showInspector ? "Hide Panel" : "Show Panel"}</button
       >
-
-      <select
-        class="sheets-input h-8 min-w-[200px] font-mono text-xs"
-        value={spreadsheetState.activeSheetIndex}
-        onchange={handleSheetChange}
-        disabled={!spreadsheetState.hasWorkbook}
-      >
-        {#each spreadsheetState.sheets as sheet, index}
-          <option value={index}
-            >{sheet.name} ({sheet.total_rows.toLocaleString()})</option
-          >
-        {/each}
-      </select>
-    </div>
-
-    <div class="sheets-toolbar-row">
       <div class="sheets-name-box h-8 w-24 font-mono text-xs font-semibold">
         {selectedAddress}
       </div>
@@ -1213,9 +1199,6 @@
           disabled={!spreadsheetState.hasWorkbook}
         /> Header row
       </label>
-    </div>
-
-    <div class="sheets-toolbar-row">
       <div class="flex flex-1 items-center gap-1">
         <input
           bind:this={searchInputElement}
@@ -1420,7 +1403,7 @@
     border-color: var(--sheet-border);
   }
 
-  .sheets-hero,
+  .sheets-menubar,
   .sheets-toolbar,
   .sheets-sidebar,
   .sheets-empty {
@@ -1428,7 +1411,7 @@
     backdrop-filter: blur(14px);
   }
 
-  .sheets-hero {
+  .sheets-menubar {
     border-color: var(--sheet-border);
     box-shadow: var(--sheet-shadow-soft);
   }
@@ -1464,6 +1447,10 @@
 
   .sheets-toolbar-row:last-child {
     border-bottom: 0;
+  }
+
+  .sheets-menubar {
+    border-color: var(--sheet-border);
   }
 
   .sheets-chip {
