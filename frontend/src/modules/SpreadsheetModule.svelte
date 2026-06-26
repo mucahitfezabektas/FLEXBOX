@@ -1100,34 +1100,45 @@
   class="sheets-module -m-4 flex h-[calc(100%+2rem)] w-[calc(100%+2rem)] min-h-0 flex-col overflow-hidden border"
 >
   {#if !isDesktopRuntime}
-    <div class="sheets-runtime-banner px-2 py-1 text-[11px]">
+    <div class="sheets-runtime-banner px-3 py-2 text-[11px]">
       Excel loading requires the native Tauri desktop window.
     </div>
   {/if}
 
-  <div class="sheets-toolbar shrink-0 border-b">
-    <div class="flex flex-wrap items-center gap-1 border-b px-2 py-1">
-      <span class="sheets-chip sheets-chip-strong">SHEETS</span>
-      <span class="sheets-chip font-mono truncate max-w-xs"
-        >{spreadsheetState.fileName || "NO FILE"}</span
-      >
-      <span class="sheets-chip">{spreadsheetState.sheetName || "NO SHEET"}</span
-      >
-      <span class="sheets-chip"
-        >Rows: {toHumanCount(spreadsheetState.totalRows)}</span
-      >
-      <span class="sheets-chip"
-        >Cols: {toHumanCount(spreadsheetState.totalCols)}</span
-      >
-      <span class="sheets-chip">Viewport: {visibleRowRange}</span>
-      <span class="sheets-chip">{spreadsheetState.statusLabel}</span>
-      {#if spreadsheetState.loadError}<span
-          class="sheets-chip sheets-chip-danger"
-          >{spreadsheetState.loadError}</span
-        >{/if}
+  <div class="sheets-hero shrink-0 border-b px-4 py-3">
+    <div class="flex flex-wrap items-start justify-between gap-3">
+      <div class="min-w-0">
+        <div class="flex items-center gap-2">
+          <span class="sheets-brand-badge">SS</span>
+          <div class="min-w-0">
+            <h1 class="truncate text-sm font-semibold tracking-tight text-[var(--sheet-text)]">
+              Spreadsheet Workbench
+            </h1>
+            <p class="text-[11px] text-[var(--sheet-muted)]">
+              High-density Excel virtualization with Rust-backed chunk streaming.
+            </p>
+          </div>
+        </div>
+      </div>
+      <div class="flex flex-wrap items-center gap-1">
+        <span class="sheets-chip sheets-chip-strong">SHEETS</span>
+        <span class="sheets-chip font-mono truncate max-w-xs">{spreadsheetState.fileName || "NO FILE"}</span>
+        <span class="sheets-chip">{spreadsheetState.statusLabel}</span>
+        {#if spreadsheetState.loadError}
+          <span class="sheets-chip sheets-chip-danger">{spreadsheetState.loadError}</span>
+        {/if}
+      </div>
     </div>
+    <div class="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-[var(--sheet-muted)]">
+      <span class="sheets-chip">Rows {toHumanCount(spreadsheetState.totalRows)}</span>
+      <span class="sheets-chip">Cols {toHumanCount(spreadsheetState.totalCols)}</span>
+      <span class="sheets-chip">Viewport {visibleRowRange}</span>
+      <span class="sheets-chip">Cache {spreadsheetState.cacheEntryCount}</span>
+    </div>
+  </div>
 
-    <div class="flex flex-wrap items-center gap-1 border-b px-2 py-1">
+  <div class="sheets-toolbar shrink-0 border-b">
+    <div class="sheets-toolbar-row">
       <input
         bind:this={filePathInputElement}
         bind:value={filePathInput}
@@ -1177,7 +1188,7 @@
       </select>
     </div>
 
-    <div class="flex flex-wrap items-center gap-1 border-b px-2 py-1">
+    <div class="sheets-toolbar-row">
       <div class="sheets-name-box h-8 w-24 font-mono text-xs font-semibold">
         {selectedAddress}
       </div>
@@ -1204,7 +1215,7 @@
       </label>
     </div>
 
-    <div class="flex flex-wrap items-center gap-1 px-2 py-1">
+    <div class="sheets-toolbar-row">
       <div class="flex flex-1 items-center gap-1">
         <input
           bind:this={searchInputElement}
@@ -1266,13 +1277,13 @@
   </div>
 
   {#if spreadsheetState.hasWorkbook}
-    <div class="flex min-h-0 flex-1">
+    <div class="flex min-h-0 flex-1 gap-0">
       {#if showInspector}
         <aside
-          class="sheets-sidebar enterprise-scrollbar hidden w-[20rem] shrink-0 overflow-auto border-r xl:block"
+          class="sheets-sidebar enterprise-scrollbar hidden w-[22rem] shrink-0 overflow-auto border-r xl:block"
         >
           <div class="sheets-panel-section border-b px-3 py-3">
-            <p class="sheets-section-label">Active Sheet</p>
+            <p class="sheets-section-label">Workbook</p>
             <h2 class="mt-1 text-sm font-semibold">
               {spreadsheetState.sheetName}
             </h2>
@@ -1293,7 +1304,7 @@
           </div>
 
           <div class="sheets-panel-section border-b px-3 py-3">
-            <p class="sheets-section-label">Quick Sweep Navigator</p>
+            <p class="sheets-section-label">Navigator</p>
             <div class="mt-2 rounded border p-2">
               <span class="text-[11px] text-[var(--sheet-muted)]"
                 >Row Slider: {selectedDisplayRowLabel}</span
@@ -1325,7 +1336,7 @@
           </div>
 
           <div class="sheets-panel-section border-b px-3 py-3">
-            <p class="sheets-section-label">Active Column Stats</p>
+            <p class="sheets-section-label">Column Health</p>
             {#if activeColumnNumericStats}
               <div class="mt-2 grid grid-cols-2 gap-2 text-[11px]">
                 <div class="border p-1">
@@ -1351,11 +1362,11 @@
       {/if}
 
       <div
-        class="flex min-h-0 min-w-0 flex-1 flex-col relative bg-[var(--sheet-surface)]"
+        class="sheets-workspace relative flex min-h-0 min-w-0 flex-1 flex-col"
       >
         <div
           bind:this={viewportElement}
-        class="absolute inset-0 outline-none overflow-hidden select-none"
+          class="sheets-viewport absolute inset-0 outline-none overflow-hidden select-none"
           onwheel={handleGridWheel}
           role="grid"
           tabindex="0"
@@ -1372,10 +1383,9 @@
   {:else}
     <div class="flex min-h-0 flex-1 items-center justify-center p-4">
       <div class="sheets-empty text-center p-8 max-w-lg border">
-        <h2 class="text-lg font-bold">FLEXBOX Pure Canvas Matrix Active</h2>
+        <h2 class="text-lg font-bold">FLEXBOX Sheets Ready</h2>
         <p class="text-sm text-[var(--sheet-muted)] mt-2">
-          GPU Acceleration enabled. Template loading streams millions of rows
-          seamlessly.
+          Load an Excel workbook to stream only the visible viewport through Rust-backed chunks.
         </p>
         <button
           class="sheets-button-primary mt-4 px-4 py-2 text-xs font-bold"
@@ -1388,131 +1398,267 @@
 
 <style>
   .sheets-module {
-    --sheet-bg: #f1efe4;
-    --sheet-surface: #faf8ef;
-    --sheet-surface-strong: #ece8d6;
-    --sheet-border: #c9c3ab;
-    --sheet-text: #24271d;
-    --sheet-muted: #696d58;
-    --sheet-accent: #6f7458;
-    --sheet-accent-strong: #4f563e;
-    background: var(--sheet-bg);
+    --sheet-bg: #e8e3d2;
+    --sheet-surface: #f7f4ea;
+    --sheet-surface-strong: #efe9d7;
+    --sheet-surface-deep: #e3dcc6;
+    --sheet-border: #c7c0a8;
+    --sheet-border-strong: #a89f82;
+    --sheet-text: #23261d;
+    --sheet-muted: #6a6d58;
+    --sheet-accent: #667053;
+    --sheet-accent-strong: #44503b;
+    --sheet-accent-soft: rgba(102, 112, 83, 0.14);
+    --sheet-shadow: 0 18px 45px rgba(34, 38, 29, 0.08);
+    --sheet-shadow-soft: 0 6px 18px rgba(34, 38, 29, 0.08);
+    background:
+      radial-gradient(circle at top left, rgba(255, 255, 255, 0.62), transparent 30%),
+      radial-gradient(circle at right top, rgba(102, 112, 83, 0.09), transparent 20%),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.48), rgba(255, 255, 255, 0)) 0 0 / 100% 88px no-repeat,
+      var(--sheet-bg);
     color: var(--sheet-text);
     border-color: var(--sheet-border);
   }
+
+  .sheets-hero,
   .sheets-toolbar,
-  .sheets-sidebar {
-    background: #faf8ef;
-    border-color: var(--sheet-border);
+  .sheets-sidebar,
+  .sheets-empty {
+    background: rgba(247, 244, 234, 0.96);
+    backdrop-filter: blur(14px);
   }
+
+  .sheets-hero {
+    border-color: var(--sheet-border);
+    box-shadow: var(--sheet-shadow-soft);
+  }
+
+  .sheets-brand-badge {
+    display: inline-flex;
+    width: 1.75rem;
+    height: 1.75rem;
+    align-items: center;
+    justify-content: center;
+    border-radius: 0.35rem;
+    background: linear-gradient(180deg, #5e694f, #3f4935);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  }
+
+  .sheets-toolbar {
+    border-color: var(--sheet-border);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+  }
+
+  .sheets-toolbar-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid rgba(199, 192, 168, 0.7);
+  }
+
+  .sheets-toolbar-row:last-child {
+    border-bottom: 0;
+  }
+
   .sheets-chip {
     display: inline-flex;
     align-items: center;
-    padding: 0 0.5rem;
     height: 1.5rem;
-    font-size: 11px;
+    padding: 0 0.5rem;
     border: 1px solid var(--sheet-border);
-    background: white;
-    border-radius: 4px;
+    border-radius: 0.4rem;
+    background: rgba(255, 255, 255, 0.82);
+    font-size: 11px;
+    color: var(--sheet-muted);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.75);
   }
+
   .sheets-chip-strong {
-    background: #4f563e;
-    color: white;
-    font-weight: bold;
+    background: linear-gradient(180deg, #5e694f, #444f3a);
+    border-color: #3d4734;
+    color: #fff;
+    font-weight: 700;
+    letter-spacing: 0.08em;
   }
+
   .sheets-chip-danger {
-    background: #fde8e8;
-    color: #9b1c1c;
-    border-color: #f8b4b4;
+    background: rgba(161, 43, 43, 0.1);
+    border-color: rgba(161, 43, 43, 0.18);
+    color: #8f2f2f;
   }
+
   .sheets-input {
     border: 1px solid var(--sheet-border);
-    padding: 0 0.5rem;
-    border-radius: 4px;
-    background: white;
+    border-radius: 0.42rem;
+    background: rgba(255, 255, 255, 0.92);
+    color: var(--sheet-text);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+    padding: 0 0.65rem;
   }
+
+  .sheets-input::placeholder {
+    color: #878a74;
+  }
+
   .sheets-input:focus {
     outline: none;
     border-color: var(--sheet-accent-strong);
+    box-shadow: 0 0 0 3px rgba(102, 112, 83, 0.14);
   }
+
   .sheets-button,
   .sheets-button-primary {
-    border: 1px solid var(--sheet-border);
-    padding: 0 0.75rem;
-    border-radius: 4px;
-    font-size: 12px;
     height: 2rem;
-    cursor: pointer;
-  }
-  .sheets-button-primary {
-    background: #6f7458;
-    color: white;
-    border-color: #4f563e;
-  }
-  .sheets-button-primary:hover {
-    background: #4f563e;
-  }
-  .sheets-button:hover {
-    background: #ece8d6;
-  }
-  .sheets-name-box {
+    padding: 0 0.85rem;
     border: 1px solid var(--sheet-border);
+    border-radius: 0.42rem;
+    font-size: 12px;
+    cursor: pointer;
+    transition:
+      transform 120ms ease,
+      background-color 120ms ease,
+      border-color 120ms ease,
+      box-shadow 120ms ease;
+  }
+
+  .sheets-button {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(239, 234, 218, 0.94));
+    color: var(--sheet-text);
+  }
+
+  .sheets-button:hover,
+  .sheets-button-primary:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 8px 16px rgba(34, 38, 29, 0.08);
+  }
+
+  .sheets-button-primary {
+    background: linear-gradient(180deg, #687556, #4d583f);
+    border-color: #445037;
+    color: white;
+  }
+
+  .sheets-name-box,
+  .sheets-formula-box {
+    border: 1px solid var(--sheet-border);
+    border-radius: 0.42rem;
+    background: rgba(255, 255, 255, 0.92);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75);
+  }
+
+  .sheets-name-box {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: #ece8d6;
-    border-radius: 4px;
+    background: linear-gradient(180deg, #efead8, #e2dcc7);
+    color: var(--sheet-accent-strong);
   }
-  .sheets-formula-box {
-    border: 1px solid var(--sheet-border);
-    background: white;
-    border-radius: 4px;
-  }
+
   .sheets-fx {
-    color: #6f7458;
-    font-weight: bold;
-    font-size: 11px;
-    margin-left: 0.5rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.35rem;
+    height: 1.35rem;
+    margin-left: 0.25rem;
+    border-radius: 999px;
+    background: var(--sheet-surface-deep);
+    color: var(--sheet-accent-strong);
+    font-size: 10px;
+    font-weight: 700;
   }
+
   .sheets-sidebar {
-    padding: 0.5rem;
-  }
-  .sheets-panel-section {
-    padding: 0.5rem 0;
+    padding: 0.65rem;
     border-color: var(--sheet-border);
+    box-shadow: inset -1px 0 0 rgba(199, 192, 168, 0.55);
   }
+
+  .sheets-panel-section {
+    padding: 0.75rem 0;
+    border-color: rgba(167, 159, 130, 0.42);
+  }
+
   .sheets-section-label {
     font-size: 10px;
-    font-weight: bold;
-    color: var(--sheet-muted);
+    font-weight: 700;
+    letter-spacing: 0.16em;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    color: var(--sheet-muted);
   }
-  .sheets-metric-card {
-    border: 1px solid var(--sheet-border);
-    background: white;
-    padding: 0.5rem;
-    border-radius: 4px;
+
+  .sheets-metric-card,
+  .sheets-empty-card {
     display: flex;
+    min-height: 4rem;
     flex-direction: column;
+    justify-content: space-between;
+    gap: 0.35rem;
+    border: 1px solid var(--sheet-border);
+    border-radius: 0.55rem;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(241, 236, 220, 0.88));
+    padding: 0.75rem;
+    box-shadow: var(--sheet-shadow-soft);
   }
+
   .sheets-metric-label {
     font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
     color: var(--sheet-muted);
   }
+
   .sheets-metric-value {
-    font-size: 12px;
-    font-family: monospace;
+    font-family: "IBM Plex Mono", "Cascadia Code", monospace;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--sheet-text);
   }
+
   .sheets-range {
-    accent-color: #4f563e;
     width: 100%;
+    accent-color: var(--sheet-accent-strong);
     cursor: pointer;
   }
+
+  .sheets-workspace {
+    background:
+      radial-gradient(circle at top right, rgba(102, 112, 83, 0.05), transparent 24%),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0)) 0 0 / 100% 100% no-repeat,
+      var(--sheet-surface);
+  }
+
+  .sheets-viewport {
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0)) 0 0 / 100% 48px no-repeat,
+      var(--sheet-surface);
+    outline: none;
+  }
+
   .sheets-empty {
-    background: white;
-    border-radius: 8px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+    border: 1px solid var(--sheet-border);
+    border-radius: 1rem;
+    padding: 2rem;
+    box-shadow: var(--sheet-shadow);
+  }
+
+  .sheets-runtime-banner {
+    border-bottom: 1px solid rgba(146, 92, 15, 0.2);
+    background: linear-gradient(180deg, rgba(255, 196, 96, 0.2), rgba(255, 196, 96, 0.12));
+    color: #8b540f;
+  }
+
+  .sheets-toolbar,
+  .sheets-sidebar {
+    border-color: var(--sheet-border);
   }
 </style>
 
