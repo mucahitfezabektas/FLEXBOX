@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount, untrack } from "svelte";
   import { isTauri } from "@tauri-apps/api/core";
   import { Menu } from "@tauri-apps/api/menu";
   import { open } from "@tauri-apps/plugin-dialog";
@@ -48,8 +49,9 @@
 
   let canvasElement = $state<HTMLCanvasElement | null>(null);
   let canvasContext = $state<CanvasRenderingContext2D | null>(null);
+  let viewportResizeObserver: ResizeObserver | null = null;
 
-  // $derived State Tanımlamaları
+  // --- DERIVED STATES ---
   const activeRows = $derived(spreadsheetState.activeRows);
   const activeSourceRows = $derived(spreadsheetState.activeSourceRows);
   const activeStartRow = $derived(
@@ -235,7 +237,7 @@
       .slice(0, 8);
   });
 
-  // Core Helpers
+  // --- CORE UTILS ---
   function excelColumnLabel(index: number) {
     let value = index;
     let label = "";
@@ -285,6 +287,42 @@
     return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
   }
 
+  function syncSelectionInputs() {
+    jumpToColumnInput =
+      selectedCol !== null ? excelColumnLabel(selectedCol + 1) : "";
+  }
+
+  function syncWorkbookInputs() {
+    filePathInput = spreadsheetState.filePath;
+    filterInput = spreadsheetState.filterQuery;
+    syncSelectionInputs();
+  }
+
+  function pushRecentSelection() {
+    if (
+      !spreadsheetState.hasWorkbook ||
+      selectedRow === null ||
+      selectedCol === null
+    ) {
+      return;
+    }
+
+    const entry: RecentSelection = {
+      key: `${spreadsheetState.sheetName}:${selectedAddress}`,
+      address: selectedAddress,
+      sheetName: spreadsheetState.sheetName || "Sheet",
+      displayRow: selectedRow,
+      sourceRow: selectedSourceRow,
+      colIndex: selectedCol,
+      value: selectedValue,
+    };
+
+    recentSelections = [
+      entry,
+      ...recentSelections.filter((item) => item.key !== entry.key),
+    ].slice(0, 10);
+  }
+
   function parseColumnInput(rawValue: string) {
     const normalized = rawValue.trim().toUpperCase();
     if (!normalized) return null;
@@ -297,7 +335,7 @@
     return index - 1;
   }
 
-  // --- EMİR KİPİ ÇİZİM KONTROLÜ ---
+  // --- CANVAS MOTORU KONTROLCÜLERİ ---
   let renderScheduled = false;
   function requestRender() {
     if (renderScheduled) return;
@@ -308,12 +346,294 @@
     });
   }
 
+  function drawCanvas() {
+    untrack(() => {
+      if (
+        !canvasElement ||
+        !canvasContext ||
+        viewportWidth === 0 ||
+        viewportHeight === 0
+      )
+        return;
+
+      const ctx = canvasContext;
+      const dpr = window.devicePixelRatio || 1;
+
+      if (
+        canvasElement.width !== viewportWidth * dpr ||
+        canvasElement.height !== viewportHeight * dpr
+      ) {
+        canvasElement.width = viewportWidth * dpr;
+        canvasElement.height = viewportHeight * dpr;
+        ctx.scale(dpr, dpr);
+      }
+
+      ctx.clearRect(0, 0, viewportWidth, viewportHeight);
+
+      if (!spreadsheetState.hasWorkbook) return;
+
+      const {
+        scrollTop,
+        scrollLeft,
+        rowHeight,
+        columnWidth,
+        rowHeaderWidth,
+        selectedRow,
+        selectedCol,
+        activePacket,
+      } = spreadsheetState;
+      const headerHeight = rowHeight;
+      const startRowIdx = activePacket?.start_row ?? 0;
+      const startColIdx = activePacket?.start_col ?? 0;
+
+      ctx.font = "12px 'IBM Plex Mono', monospace";
+      ctx.textBaseline = "middle";
+
+      activeRows.forEach((row, rIdx) => {
+        const displayRow = startRowIdx + rIdx;
+        const y = displayRow * rowHeight - scrollTop + headerHeight;
+
+        if (y > viewportHeight || y + rowHeight < headerHeight) return;
+
+        if (selectedRow === displayRow) {
+          ctx.fillStyle = "rgba(111, 116, 88, 0.05)";
+          ctx.fillRect(
+            rowHeaderWidth,
+            y,
+            viewportWidth - rowHeaderWidth,
+            rowHeight,
+          );
+        }
+
+        row.forEach((cell, cIdx) => {
+          const displayCol = startColIdx + cIdx;
+          const x = displayCol * columnWidth - scrollLeft + rowHeaderWidth;
+
+          if (x > viewportWidth || x + columnWidth < rowHeaderWidth) return;
+
+          const isSelected =
+            selectedRow === displayRow && selectedCol === displayCol;
+          const isSearchHit = isSearchHighlighted(cell);
+          const currentSourceRow = activeSourceRows[rIdx] ?? displayRow;
+          const isActiveSearch = isActiveSearchCell(
+            currentSourceRow,
+            displayCol,
+          );
+
+          if (isSelected) {
+            ctx.fillStyle = "#eadebe";
+          } else if (isActiveSearch) {
+            ctx.fillStyle = "rgba(255, 191, 77, 0.35)";
+          } else if (isSearchHit) {
+            ctx.fillStyle = "rgba(255, 255, 0, 0.2)";
+          } else {
+            ctx.fillStyle = "#faf8ef";
+          }
+
+          ctx.fillRect(x, y, columnWidth, rowHeight);
+          ctx.strokeStyle = "#c9c3ab";
+          ctx.strokeRect(x, y, columnWidth, rowHeight);
+
+          if (cell !== null && cell !== undefined && cell !== "") {
+            ctx.fillStyle = "#24271d";
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(x + 6, y, columnWidth - 12, rowHeight);
+            ctx.clip();
+
+            const strVal = formatCellValue(cell);
+            if (isNumericCell(strVal)) {
+              ctx.textAlign = "right";
+              ctx.fillText(strVal, x + columnWidth - 6, y + rowHeight / 2);
+            } else {
+              ctx.textAlign = "left";
+              ctx.fillText(strVal, x + 6, y + rowHeight / 2);
+            }
+            ctx.restore();
+          }
+
+          if (isSelected) {
+            ctx.strokeStyle = "#4f563e";
+            ctx.lineWidth = 2;
+            ctx.strokeRect(x, y, columnWidth, rowHeight);
+            ctx.lineWidth = 1;
+          }
+        });
+      });
+
+      ctx.fillStyle = "#ededf0";
+      ctx.fillRect(
+        rowHeaderWidth,
+        0,
+        viewportWidth - rowHeaderWidth,
+        headerHeight,
+      );
+      ctx.font = "bold 11px 'IBM Plex Mono', monospace";
+
+      activeColumnLabels.forEach((label, cIdx) => {
+        const colIndex = startColIdx + cIdx;
+        const x = colIndex * columnWidth - scrollLeft + rowHeaderWidth;
+
+        if (x > viewportWidth || x + columnWidth < rowHeaderWidth) return;
+
+        const isSorted = spreadsheetState.sortCol === colIndex;
+        ctx.fillStyle = isSorted ? "#dfdac5" : "#ede9d9";
+        ctx.fillRect(x, 0, columnWidth, headerHeight);
+        ctx.strokeStyle = "#a79f82";
+        ctx.strokeRect(x, 0, columnWidth, headerHeight);
+
+        ctx.fillStyle = "#24271d";
+        ctx.textAlign = "left";
+        ctx.fillText(
+          label.toUpperCase() + columnSortMarker(colIndex),
+          x + 8,
+          headerHeight / 2,
+        );
+      });
+
+      ctx.fillStyle = "#ede9d9";
+      ctx.fillRect(
+        0,
+        headerHeight,
+        rowHeaderWidth,
+        viewportHeight - headerHeight,
+      );
+      ctx.font = "11px 'IBM Plex Mono', monospace";
+      ctx.textAlign = "center";
+
+      activeRows.forEach((_, rIdx) => {
+        const displayRow = startRowIdx + rIdx;
+        const y = displayRow * rowHeight - scrollTop + headerHeight;
+
+        if (y > viewportHeight || y + rowHeight < headerHeight) return;
+
+        const isRowSelected = selectedRow === displayRow;
+        const sourceRowIndex = activeSourceRows[rIdx] ?? displayRow;
+
+        ctx.fillStyle = isRowSelected ? "#dbd5bc" : "#ede9d9";
+        ctx.fillRect(0, y, rowHeaderWidth, rowHeight);
+        ctx.strokeStyle = "#a79f82";
+        ctx.strokeRect(0, y, rowHeaderWidth, rowHeight);
+
+        ctx.fillStyle = "#696d58";
+        ctx.fillText(
+          (sourceRowIndex + 1).toString(),
+          rowHeaderWidth / 2,
+          y + rowHeight / 2,
+        );
+      });
+
+      ctx.fillStyle = "#dbd5bc";
+      ctx.fillRect(0, 0, rowHeaderWidth, headerHeight);
+      ctx.strokeStyle = "#a79f82";
+      ctx.strokeRect(0, 0, rowHeaderWidth, headerHeight);
+      ctx.fillStyle = "#4f563e";
+      ctx.font = "bold 10px 'IBM Plex Mono', monospace";
+      ctx.fillText("INDEX", rowHeaderWidth / 2, headerHeight / 2);
+    });
+  }
+
+  // --- İNTERAKTİVİTE & FARE EVENTLERİ ---
+  function resolveEventCoordinates(event: MouseEvent) {
+    const rect = canvasElement!.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+
+    const { scrollTop, scrollLeft, rowHeight, columnWidth, rowHeaderWidth } =
+      spreadsheetState;
+    const headerHeight = rowHeight;
+
+    const isColHeader = x > rowHeaderWidth && y <= headerHeight;
+    const isRowHeader = x <= rowHeaderWidth && y > headerHeight;
+    const isCell = x > rowHeaderWidth && y > headerHeight;
+
+    const clickedDisplayCol =
+      isColHeader || isCell
+        ? Math.floor((x - rowHeaderWidth + scrollLeft) / columnWidth)
+        : null;
+    const clickedDisplayRow =
+      isRowHeader || isCell
+        ? Math.floor((y - headerHeight + scrollTop) / rowHeight)
+        : null;
+
+    return {
+      isColHeader,
+      isRowHeader,
+      isCell,
+      clickedDisplayCol,
+      clickedDisplayRow,
+    };
+  }
+
+  function handleCanvasClick(event: MouseEvent) {
+    if (!spreadsheetState.hasWorkbook) return;
+    const {
+      isColHeader,
+      isRowHeader,
+      isCell,
+      clickedDisplayCol,
+      clickedDisplayRow,
+    } = resolveEventCoordinates(event);
+
+    if (isColHeader && clickedDisplayCol !== null) {
+      void sortByColumn(clickedDisplayCol);
+    } else if (isRowHeader && clickedDisplayRow !== null) {
+      focusCell(
+        clickedDisplayRow,
+        Math.max(selectedCol ?? 0, 0),
+        spreadsheetState.resolveSourceRow(clickedDisplayRow),
+      );
+    } else if (
+      isCell &&
+      clickedDisplayRow !== null &&
+      clickedDisplayCol !== null
+    ) {
+      focusCell(
+        clickedDisplayRow,
+        clickedDisplayCol,
+        spreadsheetState.resolveSourceRow(clickedDisplayRow),
+      );
+    }
+  }
+
+  function handleGridWheel(event: WheelEvent) {
+    if (!spreadsheetState.hasWorkbook) return;
+    event.preventDefault();
+
+    const maxTop = Math.max(
+      0,
+      spreadsheetState.totalContentHeight -
+        viewportHeight +
+        spreadsheetState.rowHeight,
+    );
+    const maxLeft = Math.max(
+      0,
+      spreadsheetState.totalContentWidth -
+        viewportWidth +
+        spreadsheetState.rowHeaderWidth,
+    );
+
+    const nextTop = Math.min(
+      Math.max(0, spreadsheetState.scrollTop + event.deltaY),
+      maxTop,
+    );
+    const nextLeft = Math.min(
+      Math.max(0, spreadsheetState.scrollLeft + event.deltaX),
+      maxLeft,
+    );
+
+    spreadsheetState.setScrollOffsets(nextTop, nextLeft);
+    requestRender();
+  }
+
   function focusCell(
     displayRowIndex: number,
     colIndex: number,
     sourceRowIndex: number | null,
   ) {
     spreadsheetState.setSelectedCell(displayRowIndex, colIndex, sourceRowIndex);
+    syncSelectionInputs();
+    pushRecentSelection();
     requestRender();
   }
 
@@ -389,7 +709,7 @@
     requestRender();
   }
 
-  // --- CLIPBOARD & OS CONTEXT MENUS ---
+  // --- PANOLAMA VE BAĞLAMSAL MENÜLER ---
   async function copyText(value: string) {
     if (value) await navigator.clipboard.writeText(value).catch(() => {});
   }
@@ -564,69 +884,6 @@
     ]);
   }
 
-  // --- INTERACTIVE FARE VE SCROLL KOORDİNAT HESAPLAMALARI (DERLEYİCİ HATASINI ÇÖZEN EN ÜSTE ALINAN BÖLÜM) ---
-  function resolveEventCoordinates(event: MouseEvent) {
-    const rect = canvasElement!.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
-
-    const { scrollTop, scrollLeft, rowHeight, columnWidth, rowHeaderWidth } =
-      spreadsheetState;
-    const headerHeight = rowHeight;
-
-    const isColHeader = x > rowHeaderWidth && y <= headerHeight;
-    const isRowHeader = x <= rowHeaderWidth && y > headerHeight;
-    const isCell = x > rowHeaderWidth && y > headerHeight;
-
-    const clickedDisplayCol =
-      isColHeader || isCell
-        ? Math.floor((x - rowHeaderWidth + scrollLeft) / columnWidth)
-        : null;
-    const clickedDisplayRow =
-      isRowHeader || isCell
-        ? Math.floor((y - headerHeight + scrollTop) / rowHeight)
-        : null;
-
-    return {
-      isColHeader,
-      isRowHeader,
-      isCell,
-      clickedDisplayCol,
-      clickedDisplayRow,
-    };
-  }
-
-  function handleCanvasClick(event: MouseEvent) {
-    if (!spreadsheetState.hasWorkbook) return;
-    const {
-      isColHeader,
-      isRowHeader,
-      isCell,
-      clickedDisplayCol,
-      clickedDisplayRow,
-    } = resolveEventCoordinates(event);
-
-    if (isColHeader && clickedDisplayCol !== null) {
-      void sortByColumn(clickedDisplayCol);
-    } else if (isRowHeader && clickedDisplayRow !== null) {
-      focusCell(
-        clickedDisplayRow,
-        Math.max(selectedCol ?? 0, 0),
-        spreadsheetState.resolveSourceRow(clickedDisplayRow),
-      );
-    } else if (
-      isCell &&
-      clickedDisplayRow !== null &&
-      clickedDisplayCol !== null
-    ) {
-      focusCell(
-        clickedDisplayRow,
-        clickedDisplayCol,
-        spreadsheetState.resolveSourceRow(clickedDisplayRow),
-      );
-    }
-  }
-
   function handleCanvasContextMenu(event: MouseEvent) {
     if (!spreadsheetState.hasWorkbook) return;
     const {
@@ -670,217 +927,14 @@
     }
   }
 
-  function handleGridWheel(event: WheelEvent) {
-    if (!spreadsheetState.hasWorkbook) return;
-    event.preventDefault();
-
-    const nextTop = Math.min(
-      Math.max(0, spreadsheetState.scrollTop + event.deltaY),
-      spreadsheetState.totalContentHeight -
-        viewportHeight +
-        spreadsheetState.rowHeight,
-    );
-    const nextLeft = Math.min(
-      Math.max(0, spreadsheetState.scrollLeft + event.deltaX),
-      spreadsheetState.totalContentWidth -
-        viewportWidth +
-        spreadsheetState.rowHeaderWidth,
-    );
-
-    spreadsheetState.setScrollOffsets(nextTop, nextLeft);
-    requestRender();
-  }
-
-  // --- CANVAS ASIL BOYAMA MOTORU ---
-  function drawCanvas() {
-    if (
-      !canvasElement ||
-      !canvasContext ||
-      viewportWidth === 0 ||
-      viewportHeight === 0
-    )
-      return;
-
-    const ctx = canvasContext;
-    const dpr = window.devicePixelRatio || 1;
-
-    if (
-      canvasElement.width !== viewportWidth * dpr ||
-      canvasElement.height !== viewportHeight * dpr
-    ) {
-      canvasElement.width = viewportWidth * dpr;
-      canvasElement.height = viewportHeight * dpr;
-      ctx.scale(dpr, dpr);
-    }
-
-    ctx.clearRect(0, 0, viewportWidth, viewportHeight);
-
-    if (!spreadsheetState.hasWorkbook) return;
-
-    const {
-      scrollTop,
-      scrollLeft,
-      rowHeight,
-      columnWidth,
-      rowHeaderWidth,
-      selectedRow,
-      selectedCol,
-      activePacket,
-    } = spreadsheetState;
-    const headerHeight = rowHeight;
-    const startRowIdx = activePacket?.start_row ?? 0;
-    const startColIdx = activePacket?.start_col ?? 0;
-
-    ctx.font = "12px 'IBM Plex Mono', monospace";
-    ctx.textBaseline = "middle";
-
-    activeRows.forEach((row, rIdx) => {
-      const displayRow = startRowIdx + rIdx;
-      const y = displayRow * rowHeight - scrollTop + headerHeight;
-
-      if (y > viewportHeight || y + rowHeight < headerHeight) return;
-
-      if (selectedRow === displayRow) {
-        ctx.fillStyle = "rgba(111, 116, 88, 0.05)";
-        ctx.fillRect(
-          rowHeaderWidth,
-          y,
-          viewportWidth - rowHeaderWidth,
-          rowHeight,
-        );
-      }
-
-      row.forEach((cell, cIdx) => {
-        const displayCol = startColIdx + cIdx;
-        const x = displayCol * columnWidth - scrollLeft + rowHeaderWidth;
-
-        if (x > viewportWidth || x + columnWidth < rowHeaderWidth) return;
-
-        const isSelected =
-          selectedRow === displayRow && selectedCol === displayCol;
-        const isSearchHit = isSearchHighlighted(cell);
-        const currentSourceRow = activeSourceRows[rIdx] ?? displayRow;
-        const isActiveSearch = isActiveSearchCell(currentSourceRow, displayCol);
-
-        if (isSelected) {
-          ctx.fillStyle = "#eadebe";
-        } else if (isActiveSearch) {
-          ctx.fillStyle = "rgba(255, 191, 77, 0.35)";
-        } else if (isSearchHit) {
-          ctx.fillStyle = "rgba(255, 255, 0, 0.2)";
-        } else {
-          ctx.fillStyle = "#faf8ef";
-        }
-
-        ctx.fillRect(x, y, columnWidth, rowHeight);
-        ctx.strokeStyle = "#c9c3ab";
-        ctx.strokeRect(x, y, columnWidth, rowHeight);
-
-        if (cell !== null && cell !== undefined && cell !== "") {
-          ctx.fillStyle = "#24271d";
-          ctx.save();
-          ctx.beginPath();
-          ctx.rect(x + 6, y, columnWidth - 12, rowHeight);
-          ctx.clip();
-
-          const strVal = formatCellValue(cell);
-          if (isNumericCell(strVal)) {
-            ctx.textAlign = "right";
-            ctx.fillText(strVal, x + columnWidth - 6, y + rowHeight / 2);
-          } else {
-            ctx.textAlign = "left";
-            ctx.fillText(strVal, x + 6, y + rowHeight / 2);
-          }
-          ctx.restore();
-        }
-
-        if (isSelected) {
-          ctx.strokeStyle = "#4f563e";
-          ctx.lineWidth = 2;
-          ctx.strokeRect(x, y, columnWidth, rowHeight);
-          ctx.lineWidth = 1;
-        }
-      });
-    });
-
-    ctx.fillStyle = "#ededf0";
-    ctx.fillRect(
-      rowHeaderWidth,
-      0,
-      viewportWidth - rowHeaderWidth,
-      headerHeight,
-    );
-    ctx.font = "bold 11px 'IBM Plex Mono', monospace";
-
-    activeColumnLabels.forEach((label, cIdx) => {
-      const colIndex = startColIdx + cIdx;
-      const x = colIndex * columnWidth - scrollLeft + rowHeaderWidth;
-
-      if (x > viewportWidth || x + columnWidth < rowHeaderWidth) return;
-
-      const isSorted = spreadsheetState.sortCol === colIndex;
-      ctx.fillStyle = isSorted ? "#dfdac5" : "#ede9d9";
-      ctx.fillRect(x, 0, columnWidth, headerHeight);
-      ctx.strokeStyle = "#a79f82";
-      ctx.strokeRect(x, 0, columnWidth, headerHeight);
-
-      ctx.fillStyle = "#24271d";
-      ctx.textAlign = "left";
-      ctx.fillText(
-        label.toUpperCase() + columnSortMarker(colIndex),
-        x + 8,
-        headerHeight / 2,
-      );
-    });
-
-    ctx.fillStyle = "#ede9d9";
-    ctx.fillRect(
-      0,
-      headerHeight,
-      rowHeaderWidth,
-      viewportHeight - headerHeight,
-    );
-    ctx.font = "11px 'IBM Plex Mono', monospace";
-    ctx.textAlign = "center";
-
-    activeRows.forEach((_, rIdx) => {
-      const displayRow = startRowIdx + rIdx;
-      const y = displayRow * rowHeight - scrollTop + headerHeight;
-
-      if (y > viewportHeight || y + rowHeight < headerHeight) return;
-
-      const isRowSelected = selectedRow === displayRow;
-      const sourceRowIndex = activeSourceRows[rIdx] ?? displayRow;
-
-      ctx.fillStyle = isRowSelected ? "#dbd5bc" : "#ede9d9";
-      ctx.fillRect(0, y, rowHeaderWidth, rowHeight);
-      ctx.strokeStyle = "#a79f82";
-      ctx.strokeRect(0, y, rowHeaderWidth, rowHeight);
-
-      ctx.fillStyle = "#696d58";
-      ctx.fillText(
-        (sourceRowIndex + 1).toString(),
-        rowHeaderWidth / 2,
-        y + rowHeight / 2,
-      );
-    });
-
-    ctx.fillStyle = "#dbd5bc";
-    ctx.fillRect(0, 0, rowHeaderWidth, headerHeight);
-    ctx.strokeStyle = "#a79f82";
-    ctx.strokeRect(0, 0, rowHeaderWidth, headerHeight);
-    ctx.fillStyle = "#4f563e";
-    ctx.font = "bold 10px 'IBM Plex Mono', monospace";
-    ctx.fillText("INDEX", rowHeaderWidth / 2, headerHeight / 2);
-  }
-
-  // UI Fonksiyon Akışları
+  // UI İŞLEMLERİ (Menüler ve Butonlar İçin)
   async function loadWorkbook() {
     await spreadsheetState.loadExcelFile(filePathInput);
     searchInput = "";
     filterInput = spreadsheetState.filterQuery;
     jumpToRowInput = "";
     activeSearchIndex = 0;
+    syncWorkbookInputs();
     requestRender();
   }
   async function selectExcelFile() {
@@ -900,6 +954,7 @@
       searchInput = "";
       filterInput = spreadsheetState.filterQuery;
       activeSearchIndex = 0;
+      syncWorkbookInputs();
       requestRender();
     } catch (e) {
       spreadsheetState.loadError = "Picker error.";
@@ -998,66 +1053,46 @@
     requestRender();
   }
 
-  // Senkronizasyon Efektleri ($effect)
-  $effect(() => {
-    spreadsheetState.setViewportMetrics(viewportHeight, viewportWidth);
-    requestRender();
-  });
-  $effect(() => {
-    if (
-      spreadsheetState.filePath &&
-      spreadsheetState.filePath !== filePathInput
-    )
-      filePathInput = spreadsheetState.filePath;
-  });
-  $effect(() => {
-    if (selectedCol !== null)
-      jumpToColumnInput = excelColumnLabel(selectedCol + 1);
-  });
-  $effect(() => {
-    filterInput = spreadsheetState.filterQuery;
-  });
-  $effect(() => {
-    if (
-      spreadsheetState.searchResults.length > 0 &&
-      activeSearchIndex >= spreadsheetState.searchResults.length
-    )
-      activeSearchIndex = 0;
-  });
-
-  $effect(() => {
-    activeRows;
-    spreadsheetState.searchResults;
-    requestRender();
-  });
-
-  $effect(() => {
+  // --- REAKTİF TRACKING HAVUZLARI ---
+  // HATA ÇÖZÜMÜ: Svelte state'leri izler, ama işlem yaparken (untrack) zinciri kırar
+  // --- REACTIVE BRIDGE ---
+  onMount(() => {
     if (canvasElement && !canvasContext) {
       canvasContext = canvasElement.getContext("2d", { alpha: false });
-      requestRender();
     }
-  });
 
-  $effect(() => {
-    if (
-      !spreadsheetState.hasWorkbook ||
-      selectedRow === null ||
-      selectedCol === null
-    )
-      return;
-    const entry: RecentSelection = {
-      key: `${spreadsheetState.sheetName}:${selectedAddress}`,
-      address: selectedAddress,
-      sheetName: spreadsheetState.sheetName || "Sheet",
-      displayRow: selectedRow,
-      sourceRow: selectedSourceRow,
-      colIndex: selectedCol,
-      value: selectedValue,
+    const updateViewportMetrics = () => {
+      if (!viewportElement) {
+        return;
+      }
+
+      const nextHeight = viewportElement.clientHeight;
+      const nextWidth = viewportElement.clientWidth;
+
+      if (nextHeight === viewportHeight && nextWidth === viewportWidth) {
+        return;
+      }
+
+      viewportHeight = nextHeight;
+      viewportWidth = nextWidth;
+      spreadsheetState.setViewportMetrics(nextHeight, nextWidth);
+      requestRender();
     };
-    recentSelections = [
-      entry,
-      ...recentSelections.filter((item) => item.key !== entry.key),
-    ].slice(0, 10);
+
+    updateViewportMetrics();
+
+    viewportResizeObserver = new ResizeObserver(() => {
+      updateViewportMetrics();
+    });
+
+    if (viewportElement) {
+      viewportResizeObserver.observe(viewportElement);
+    }
+
+    return () => {
+      viewportResizeObserver?.disconnect();
+      viewportResizeObserver = null;
+    };
   });
 </script>
 
@@ -1320,9 +1355,7 @@
       >
         <div
           bind:this={viewportElement}
-          bind:clientHeight={viewportHeight}
-          bind:clientWidth={viewportWidth}
-          class="absolute inset-0 outline-none overflow-hidden select-none"
+        class="absolute inset-0 outline-none overflow-hidden select-none"
           onwheel={handleGridWheel}
           role="grid"
           tabindex="0"
@@ -1482,3 +1515,4 @@
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
   }
 </style>
+
