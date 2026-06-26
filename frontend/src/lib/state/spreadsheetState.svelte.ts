@@ -204,10 +204,10 @@ class SpreadsheetState {
   rowHeight = $state(28);
   columnWidth = $state(144);
   rowHeaderWidth = $state(72);
-  rowChunkSize = $state(128);
-  columnChunkSize = $state(8);
-  overscanRows = $state(24);
-  overscanCols = $state(3);
+  rowChunkSize = $state(256);
+  columnChunkSize = $state(32);
+  overscanRows = $state(50);
+  overscanCols = $state(10);
   densityMode = $state<SpreadsheetDensityMode>('balanced');
   columnProfile = $state<SpreadsheetColumnProfile>('standard');
   isLoading = $state(false);
