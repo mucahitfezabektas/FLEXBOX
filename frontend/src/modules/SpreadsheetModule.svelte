@@ -3,7 +3,6 @@
   import { Menu } from "@tauri-apps/api/menu";
   import { open } from "@tauri-apps/plugin-dialog";
   import { PhysicalPosition } from "@tauri-apps/api/window";
-  import { untrack } from "svelte";
   import {
     spreadsheetState,
     type SpreadsheetColumnProfile,
@@ -236,7 +235,7 @@
       .slice(0, 8);
   });
 
-  // Helpers
+  // Core Helpers
   function excelColumnLabel(index: number) {
     let value = index;
     let label = "";
@@ -298,16 +297,29 @@
     return index - 1;
   }
 
+  // --- EMİR KİPİ ÇİZİM KONTROLÜ ---
+  let renderScheduled = false;
+  function requestRender() {
+    if (renderScheduled) return;
+    renderScheduled = true;
+    requestAnimationFrame(() => {
+      renderScheduled = false;
+      drawCanvas();
+    });
+  }
+
   function focusCell(
     displayRowIndex: number,
     colIndex: number,
     sourceRowIndex: number | null,
   ) {
     spreadsheetState.setSelectedCell(displayRowIndex, colIndex, sourceRowIndex);
+    requestRender();
   }
 
   async function sortByColumn(colIndex: number) {
     await spreadsheetState.cycleColumnSort(colIndex);
+    requestRender();
   }
 
   async function sortByColumnDirection(
@@ -315,14 +327,17 @@
     direction: SpreadsheetSortDirection,
   ) {
     await spreadsheetState.setColumnSort(colIndex, direction);
+    requestRender();
   }
 
   async function clearColumnSort() {
     await spreadsheetState.clearColumnSort();
+    requestRender();
   }
 
   function focusMatch(match: SpreadsheetSearchMatch) {
     spreadsheetState.focusCell(match.display_row, match.col, match.source_row);
+    requestRender();
   }
 
   function focusSearchResultAt(index: number) {
@@ -345,30 +360,36 @@
     searchInput = value;
     await spreadsheetState.searchWorkbook(value);
     activeSearchIndex = 0;
+    requestRender();
   }
   async function applyFilterValue(value: string) {
     if (!value.trim()) return;
     filterInput = value;
     await spreadsheetState.applyFilter(value);
+    requestRender();
   }
   async function clearViewOptions() {
     filterInput = "";
     await spreadsheetState.clearViewOptions();
+    requestRender();
   }
   async function toggleHeaderRowMode() {
     await spreadsheetState.setHeaderRowEnabled(
       !spreadsheetState.headerRowEnabled,
     );
+    requestRender();
   }
   async function reloadWorkbook() {
     if (filePathInput.trim())
       await spreadsheetState.loadExcelFile(filePathInput);
+    requestRender();
   }
   function resetViewport() {
     spreadsheetState.resetViewport();
+    requestRender();
   }
 
-  // --- CLIPBOARD & CONTEXT MENUS ---
+  // --- CLIPBOARD & OS CONTEXT MENUS ---
   async function copyText(value: string) {
     if (value) await navigator.clipboard.writeText(value).catch(() => {});
   }
@@ -543,7 +564,134 @@
     ]);
   }
 
-  // --- CANVAS ÇİZİM ENGINE ---
+  // --- INTERACTIVE FARE VE SCROLL KOORDİNAT HESAPLAMALARI (DERLEYİCİ HATASINI ÇÖZEN EN ÜSTE ALINAN BÖLÜM) ---
+  function resolveEventCoordinates(event: MouseEvent) {
+    const rect = canvasElement!.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+
+    const { scrollTop, scrollLeft, rowHeight, columnWidth, rowHeaderWidth } =
+      spreadsheetState;
+    const headerHeight = rowHeight;
+
+    const isColHeader = x > rowHeaderWidth && y <= headerHeight;
+    const isRowHeader = x <= rowHeaderWidth && y > headerHeight;
+    const isCell = x > rowHeaderWidth && y > headerHeight;
+
+    const clickedDisplayCol =
+      isColHeader || isCell
+        ? Math.floor((x - rowHeaderWidth + scrollLeft) / columnWidth)
+        : null;
+    const clickedDisplayRow =
+      isRowHeader || isCell
+        ? Math.floor((y - headerHeight + scrollTop) / rowHeight)
+        : null;
+
+    return {
+      isColHeader,
+      isRowHeader,
+      isCell,
+      clickedDisplayCol,
+      clickedDisplayRow,
+    };
+  }
+
+  function handleCanvasClick(event: MouseEvent) {
+    if (!spreadsheetState.hasWorkbook) return;
+    const {
+      isColHeader,
+      isRowHeader,
+      isCell,
+      clickedDisplayCol,
+      clickedDisplayRow,
+    } = resolveEventCoordinates(event);
+
+    if (isColHeader && clickedDisplayCol !== null) {
+      void sortByColumn(clickedDisplayCol);
+    } else if (isRowHeader && clickedDisplayRow !== null) {
+      focusCell(
+        clickedDisplayRow,
+        Math.max(selectedCol ?? 0, 0),
+        spreadsheetState.resolveSourceRow(clickedDisplayRow),
+      );
+    } else if (
+      isCell &&
+      clickedDisplayRow !== null &&
+      clickedDisplayCol !== null
+    ) {
+      focusCell(
+        clickedDisplayRow,
+        clickedDisplayCol,
+        spreadsheetState.resolveSourceRow(clickedDisplayRow),
+      );
+    }
+  }
+
+  function handleCanvasContextMenu(event: MouseEvent) {
+    if (!spreadsheetState.hasWorkbook) return;
+    const {
+      isColHeader,
+      isRowHeader,
+      isCell,
+      clickedDisplayCol,
+      clickedDisplayRow,
+    } = resolveEventCoordinates(event);
+
+    if (isColHeader && clickedDisplayCol !== null) {
+      const label =
+        activeColumnLabels[clickedDisplayCol - activeStartCol] ??
+        excelColumnLabel(clickedDisplayCol + 1);
+      handleColumnContextMenu(event, clickedDisplayCol, label);
+    } else if (isRowHeader && clickedDisplayRow !== null) {
+      const sourceRow = spreadsheetState.resolveSourceRow(clickedDisplayRow);
+      handleRowContextMenu(
+        event,
+        clickedDisplayRow,
+        sourceRow ?? clickedDisplayRow,
+        activeRows[clickedDisplayRow - activeStartRow] ?? [],
+      );
+    } else if (
+      isCell &&
+      clickedDisplayRow !== null &&
+      clickedDisplayCol !== null
+    ) {
+      const sourceRow = spreadsheetState.resolveSourceRow(clickedDisplayRow);
+      const rowData = activeRows[clickedDisplayRow - activeStartRow] ?? [];
+      handleCellContextMenu(
+        event,
+        clickedDisplayRow,
+        clickedDisplayCol,
+        sourceRow ?? clickedDisplayRow,
+        rowData[clickedDisplayCol - activeStartCol] ?? "",
+        rowData,
+      );
+    } else {
+      handleViewportContextMenu(event);
+    }
+  }
+
+  function handleGridWheel(event: WheelEvent) {
+    if (!spreadsheetState.hasWorkbook) return;
+    event.preventDefault();
+
+    const nextTop = Math.min(
+      Math.max(0, spreadsheetState.scrollTop + event.deltaY),
+      spreadsheetState.totalContentHeight -
+        viewportHeight +
+        spreadsheetState.rowHeight,
+    );
+    const nextLeft = Math.min(
+      Math.max(0, spreadsheetState.scrollLeft + event.deltaX),
+      spreadsheetState.totalContentWidth -
+        viewportWidth +
+        spreadsheetState.rowHeaderWidth,
+    );
+
+    spreadsheetState.setScrollOffsets(nextTop, nextLeft);
+    requestRender();
+  }
+
+  // --- CANVAS ASIL BOYAMA MOTORU ---
   function drawCanvas() {
     if (
       !canvasElement ||
@@ -554,20 +702,16 @@
       return;
 
     const ctx = canvasContext;
+    const dpr = window.devicePixelRatio || 1;
 
-    // Sonsuz döngüyü önleyen can alıcı değişiklik: Svelte takibinden çıkarıyoruz (untrack)
-    untrack(() => {
-      if (!canvasElement) return;
-      const dpr = window.devicePixelRatio || 1;
-      if (
-        canvasElement.width !== viewportWidth * dpr ||
-        canvasElement.height !== viewportHeight * dpr
-      ) {
-        canvasElement.width = viewportWidth * dpr;
-        canvasElement.height = viewportHeight * dpr;
-        ctx.scale(dpr, dpr);
-      }
-    });
+    if (
+      canvasElement.width !== viewportWidth * dpr ||
+      canvasElement.height !== viewportHeight * dpr
+    ) {
+      canvasElement.width = viewportWidth * dpr;
+      canvasElement.height = viewportHeight * dpr;
+      ctx.scale(dpr, dpr);
+    }
 
     ctx.clearRect(0, 0, viewportWidth, viewportHeight);
 
@@ -730,138 +874,14 @@
     ctx.fillText("INDEX", rowHeaderWidth / 2, headerHeight / 2);
   }
 
-  function handleGridWheel(event: WheelEvent) {
-    if (!spreadsheetState.hasWorkbook) return;
-    event.preventDefault();
-
-    const nextTop = Math.min(
-      Math.max(0, spreadsheetState.scrollTop + event.deltaY),
-      spreadsheetState.totalContentHeight -
-        viewportHeight +
-        spreadsheetState.rowHeight,
-    );
-    const nextLeft = Math.min(
-      Math.max(0, spreadsheetState.scrollLeft + event.deltaX),
-      spreadsheetState.totalContentWidth -
-        viewportWidth +
-        spreadsheetState.rowHeaderWidth,
-    );
-
-    spreadsheetState.setScrollOffsets(nextTop, nextLeft);
-  }
-
-  function resolveEventCoordinates(event: MouseEvent) {
-    const rect = canvasElement!.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
-
-    const { scrollTop, scrollLeft, rowHeight, columnWidth, rowHeaderWidth } =
-      spreadsheetState;
-    const headerHeight = rowHeight;
-
-    const isColHeader = x > rowHeaderWidth && y <= headerHeight;
-    const isRowHeader = x <= rowHeaderWidth && y > headerHeight;
-    const isCell = x > rowHeaderWidth && y > headerHeight;
-
-    const clickedDisplayCol =
-      isColHeader || isCell
-        ? Math.floor((x - rowHeaderWidth + scrollLeft) / columnWidth)
-        : null;
-    const clickedDisplayRow =
-      isRowHeader || isCell
-        ? Math.floor((y - headerHeight + scrollTop) / rowHeight)
-        : null;
-
-    return {
-      isColHeader,
-      isRowHeader,
-      isCell,
-      clickedDisplayCol,
-      clickedDisplayRow,
-    };
-  }
-
-  function handleCanvasClick(event: MouseEvent) {
-    if (!spreadsheetState.hasWorkbook) return;
-    const {
-      isColHeader,
-      isRowHeader,
-      isCell,
-      clickedDisplayCol,
-      clickedDisplayRow,
-    } = resolveEventCoordinates(event);
-
-    if (isColHeader && clickedDisplayCol !== null) {
-      void sortByColumn(clickedDisplayCol);
-    } else if (isRowHeader && clickedDisplayRow !== null) {
-      focusCell(
-        clickedDisplayRow,
-        Math.max(selectedCol ?? 0, 0),
-        spreadsheetState.resolveSourceRow(clickedDisplayRow),
-      );
-    } else if (
-      isCell &&
-      clickedDisplayRow !== null &&
-      clickedDisplayCol !== null
-    ) {
-      focusCell(
-        clickedDisplayRow,
-        clickedDisplayCol,
-        spreadsheetState.resolveSourceRow(clickedDisplayRow),
-      );
-    }
-  }
-
-  function handleCanvasContextMenu(event: MouseEvent) {
-    if (!spreadsheetState.hasWorkbook) return;
-    const {
-      isColHeader,
-      isRowHeader,
-      isCell,
-      clickedDisplayCol,
-      clickedDisplayRow,
-    } = resolveEventCoordinates(event);
-
-    if (isColHeader && clickedDisplayCol !== null) {
-      const label =
-        activeColumnLabels[clickedDisplayCol - activeStartCol] ??
-        excelColumnLabel(clickedDisplayCol + 1);
-      handleColumnContextMenu(event, clickedDisplayCol, label);
-    } else if (isRowHeader && clickedDisplayRow !== null) {
-      const sourceRow = spreadsheetState.resolveSourceRow(clickedDisplayRow);
-      handleRowContextMenu(
-        event,
-        clickedDisplayRow,
-        sourceRow ?? clickedDisplayRow,
-        activeRows[clickedDisplayRow - activeStartRow] ?? [],
-      );
-    } else if (
-      isCell &&
-      clickedDisplayRow !== null &&
-      clickedDisplayCol !== null
-    ) {
-      const sourceRow = spreadsheetState.resolveSourceRow(clickedDisplayRow);
-      const rowData = activeRows[clickedDisplayRow - activeStartRow] ?? [];
-      handleCellContextMenu(
-        event,
-        clickedDisplayRow,
-        clickedDisplayCol,
-        sourceRow ?? clickedDisplayRow,
-        rowData[clickedDisplayCol - activeStartCol] ?? "",
-        rowData,
-      );
-    } else {
-      handleViewportContextMenu(event);
-    }
-  }
-
-  // UI Eylemleri
+  // UI Fonksiyon Akışları
   async function loadWorkbook() {
     await spreadsheetState.loadExcelFile(filePathInput);
     searchInput = "";
     filterInput = spreadsheetState.filterQuery;
     jumpToRowInput = "";
     activeSearchIndex = 0;
+    requestRender();
   }
   async function selectExcelFile() {
     if (!isDesktopRuntime) {
@@ -880,6 +900,7 @@
       searchInput = "";
       filterInput = spreadsheetState.filterQuery;
       activeSearchIndex = 0;
+      requestRender();
     } catch (e) {
       spreadsheetState.loadError = "Picker error.";
     }
@@ -889,38 +910,53 @@
   }
   function goToFirstRow() {
     spreadsheetState.goToRow(1);
+    requestRender();
   }
   function goToLastRow() {
     spreadsheetState.goToRow(Math.max(spreadsheetState.totalRows, 1));
+    requestRender();
   }
   async function handleSheetChange(event: Event) {
     const target = event.currentTarget as HTMLSelectElement | null;
     if (!target) return;
     const idx = Number.parseInt(target.value, 10);
-    if (!Number.isNaN(idx)) await spreadsheetState.activateSheet(idx);
+    if (!Number.isNaN(idx)) {
+      await spreadsheetState.activateSheet(idx);
+      requestRender();
+    }
   }
   async function activateSheetTab(sheetIndex: number) {
     await spreadsheetState.activateSheet(sheetIndex);
+    requestRender();
   }
   async function runSearch() {
     await spreadsheetState.searchWorkbook(searchInput);
     activeSearchIndex = 0;
+    requestRender();
   }
   function clearSearch() {
     searchInput = "";
     activeSearchIndex = 0;
     spreadsheetState.clearSearchResults();
+    requestRender();
   }
   async function applyFilter() {
     await spreadsheetState.applyFilter(filterInput);
+    requestRender();
   }
   async function handleHeaderToggle(event: Event) {
     const target = event.currentTarget as HTMLInputElement | null;
-    if (target) await spreadsheetState.setHeaderRowEnabled(target.checked);
+    if (target) {
+      await spreadsheetState.setHeaderRowEnabled(target.checked);
+      requestRender();
+    }
   }
   function goToVisibleRow() {
     const num = Number.parseInt(jumpToRowInput, 10);
-    if (!Number.isNaN(num)) spreadsheetState.goToRow(num);
+    if (!Number.isNaN(num)) {
+      spreadsheetState.goToRow(num);
+      requestRender();
+    }
   }
   function goToVisibleColumn() {
     const idx = parseColumnInput(jumpToColumnInput);
@@ -932,10 +968,14 @@
         selectedRow ?? spreadsheetState.verticalWindow.visibleStartRow,
       ),
     );
+    requestRender();
   }
   function scrubToRow(event: Event) {
     const t = event.currentTarget as HTMLInputElement | null;
-    if (t) spreadsheetState.goToRow(Number.parseInt(t.value, 10));
+    if (t) {
+      spreadsheetState.goToRow(Number.parseInt(t.value, 10));
+      requestRender();
+    }
   }
   function scrubToColumn(event: Event) {
     const t = event.currentTarget as HTMLInputElement | null;
@@ -947,17 +987,21 @@
         selectedRow ?? spreadsheetState.verticalWindow.visibleStartRow,
       ),
     );
+    requestRender();
   }
   function setDensityMode(mode: SpreadsheetDensityMode) {
     spreadsheetState.setDensityMode(mode);
+    requestRender();
   }
   function setColumnProfile(profile: SpreadsheetColumnProfile) {
     spreadsheetState.setColumnProfile(profile);
+    requestRender();
   }
 
   // Senkronizasyon Efektleri ($effect)
   $effect(() => {
     spreadsheetState.setViewportMetrics(viewportHeight, viewportWidth);
+    requestRender();
   });
   $effect(() => {
     if (
@@ -980,21 +1024,20 @@
     )
       activeSearchIndex = 0;
   });
+
   $effect(() => {
     activeRows;
-    spreadsheetState.scrollTop;
-    spreadsheetState.scrollLeft;
-    selectedRow;
-    selectedCol;
     spreadsheetState.searchResults;
-    viewportWidth;
-    viewportHeight; // Viewport takibi yapılıyor ama untrack ile döngü kırıldı
-    requestAnimationFrame(() => drawCanvas());
+    requestRender();
   });
+
   $effect(() => {
-    if (canvasElement && !canvasContext)
+    if (canvasElement && !canvasContext) {
       canvasContext = canvasElement.getContext("2d", { alpha: false });
+      requestRender();
+    }
   });
+
   $effect(() => {
     if (
       !spreadsheetState.hasWorkbook ||
