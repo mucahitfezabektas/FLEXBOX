@@ -6,6 +6,7 @@ use std::{
     cmp::Ordering,
     fs,
     path::{Path, PathBuf},
+    process::Command,
     sync::{Arc, Mutex},
     thread,
     time::Duration,
@@ -720,6 +721,28 @@ fn stop_sidecar(sidecar_state: &BackendSidecarState) {
             let _ = child.kill();
         }
     }
+
+    thread::sleep(Duration::from_millis(180));
+}
+
+#[cfg(target_os = "windows")]
+fn terminate_orphan_sidecars() {
+    let _ = Command::new("taskkill")
+        .args(["/F", "/T", "/IM", "flexbox-backend.exe"])
+        .output();
+}
+
+#[cfg(not(target_os = "windows"))]
+fn terminate_orphan_sidecars() {}
+
+#[tauri::command]
+fn shutdown_application(
+    app_handle: tauri::AppHandle,
+    sidecar_state: tauri::State<'_, BackendSidecarState>,
+) -> Result<(), String> {
+    stop_sidecar(&sidecar_state);
+    app_handle.exit(0);
+    Ok(())
 }
 
 fn spawn_backend_sidecar(app_handle: tauri::AppHandle) -> Result<(), String> {
@@ -820,6 +843,7 @@ fn main() {
             SpreadsheetRuntime::default(),
         ))))
         .setup(|app| {
+            terminate_orphan_sidecars();
             spawn_backend_sidecar(app.handle().clone())?;
             Ok(())
         })
@@ -829,6 +853,7 @@ fn main() {
             save_workspace_session,
             load_workspace_session,
             clear_workspace_session,
+            shutdown_application,
             load_excel_file,
             set_active_sheet,
             configure_active_sheet_view,
@@ -838,9 +863,25 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("failed to build FLEXBOX Tauri shell")
         .run(|app_handle, event| {
-            if let tauri::RunEvent::Exit = event {
-                let state = app_handle.state::<BackendSidecarState>();
-                stop_sidecar(&state);
+            match event {
+                tauri::RunEvent::Exit => {
+                    let state = app_handle.state::<BackendSidecarState>();
+                    stop_sidecar(&state);
+                }
+                tauri::RunEvent::ExitRequested { .. } => {
+                    let state = app_handle.state::<BackendSidecarState>();
+                    stop_sidecar(&state);
+                }
+                tauri::RunEvent::WindowEvent { event, .. } => {
+                    if matches!(
+                        event,
+                        tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
+                    ) {
+                        let state = app_handle.state::<BackendSidecarState>();
+                        stop_sidecar(&state);
+                    }
+                }
+                _ => {}
             }
         });
 }

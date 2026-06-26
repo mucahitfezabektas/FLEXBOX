@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { invoke } from '@tauri-apps/api/core';
   import { onMount } from 'svelte';
   import type { ResizeDirection } from '@tauri-apps/api/window';
   import DraggableResizableWindow from '$components/DraggableResizableWindow.svelte';
@@ -72,7 +73,15 @@
   }
 
   async function closeShellWindow() {
-    await tauriWindowControls?.close();
+    if (!tauriWindowControls) {
+      return;
+    }
+
+    try {
+      await invoke('shutdown_application');
+    } catch {
+      await tauriWindowControls.close();
+    }
   }
 
   async function syncShellMaximizeState() {
@@ -115,6 +124,16 @@
     event.preventDefault();
     event.stopPropagation();
     await tauriWindowControls?.startResizeDragging(direction);
+  }
+
+  function handleShellHeaderDoubleClick(event: MouseEvent) {
+    if ((event.target as HTMLElement).closest('button')) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    void toggleShellMaximize();
   }
 
   function showShellHeader(pinned = false) {
@@ -376,11 +395,12 @@
     bind:this={shellHeaderElement}
     class={`top-bar absolute inset-x-0 top-0 z-60 flex h-14 items-center gap-3 border-b px-3 transition-transform duration-200 ease-out ${
       shellHeaderVisible || shellHeaderPinned ? 'translate-y-0' : '-translate-y-[calc(100%-4px)]'
-    }`}
+    } ${shellHeaderVisible || shellHeaderPinned ? 'pointer-events-auto' : 'pointer-events-none'}`}
     onmouseenter={() => showShellHeader(true)}
     onmouseleave={releaseShellHeader}
     onfocusin={() => showShellHeader(true)}
     onfocusout={handleShellHeaderFocusOut}
+    ondblclick={handleShellHeaderDoubleClick}
     role="banner"
   >
     <div
@@ -431,6 +451,7 @@
       </div>
       <button
         class="shell-control-button flex h-8 w-10 items-center justify-center rounded-none border-0 bg-transparent text-xs text-enterprise-text-secondary shadow-none transition"
+        onpointerdown={(event) => event.stopPropagation()}
         onclick={minimizeShellWindow}
         aria-label="Minimize application window"
         title="Minimize"
@@ -439,6 +460,7 @@
       </button>
       <button
         class="shell-control-button flex h-8 w-10 items-center justify-center rounded-none border-0 bg-transparent text-[11px] text-enterprise-text-secondary shadow-none transition"
+        onpointerdown={(event) => event.stopPropagation()}
         onclick={toggleShellMaximize}
         aria-label={shellIsMaximized ? 'Restore application window' : 'Maximize application window'}
         title={shellIsMaximized ? 'Restore' : 'Maximize'}
@@ -449,6 +471,7 @@
         class={`shell-control-button flex h-8 w-10 items-center justify-center rounded-none border-0 bg-transparent text-[11px] shadow-none transition ${
           shellIsFullscreen ? 'text-enterprise-text-primary' : 'text-enterprise-text-secondary'
         }`}
+        onpointerdown={(event) => event.stopPropagation()}
         onclick={toggleShellFullscreen}
         aria-label={shellIsFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
         title={shellIsFullscreen ? 'Exit fullscreen (F11)' : 'Fullscreen (F11)'}
@@ -457,6 +480,7 @@
       </button>
       <button
         class="shell-control-button shell-control-button-danger flex h-8 w-12 items-center justify-center rounded-none border-0 bg-transparent text-xs shadow-none transition"
+        onpointerdown={(event) => event.stopPropagation()}
         onclick={closeShellWindow}
         aria-label="Close application window"
         title="Close"
