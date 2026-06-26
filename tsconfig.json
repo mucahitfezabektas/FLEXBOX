@@ -13,11 +13,10 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "types": ["svelte", "vite/client"],
-    "baseUrl": ".",
     "paths": {
-      "$components/*": ["frontend/src/components/*"],
-      "$lib/*": ["frontend/src/lib/*"],
-      "$modules/*": ["frontend/src/modules/*"]
+      "$components/*": ["./frontend/src/components/*"],
+      "$lib/*": ["./frontend/src/lib/*"],
+      "$modules/*": ["./frontend/src/modules/*"]
     }
   },
   "include": [
@@ -25,7 +24,7 @@
     "frontend/src/**/*.ts",
     "frontend/src/**/*.svelte",
     "frontend/src/**/*.svelte.ts",
-    "frontend/vite-env.d.ts",
+    "frontend/src/vite-env.d.ts",
     "vite.config.ts",
     "tailwind.config.ts"
   ]

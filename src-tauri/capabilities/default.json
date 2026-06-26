@@ -2,15 +2,19 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default capability set for the FLEXBOX main window.",
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "dialog:allow-open",
     "core:window:allow-close",
     "core:window:allow-minimize",
-    "core:window:allow-internal-toggle-maximize",
-    "core:window:allow-is-maximized",
+    "core:window:allow-maximize",
+    "core:window:allow-unmaximize",
     "core:window:allow-toggle-maximize",
+    "core:window:allow-is-maximized",
+    "core:window:allow-set-fullscreen",
     "core:window:allow-start-dragging",
     "core:window:allow-start-resize-dragging",
     {

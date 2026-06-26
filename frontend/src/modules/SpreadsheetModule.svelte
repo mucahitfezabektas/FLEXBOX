@@ -3,6 +3,7 @@
   import { Menu } from "@tauri-apps/api/menu";
   import { open } from "@tauri-apps/plugin-dialog";
   import { PhysicalPosition } from "@tauri-apps/api/window";
+  import { untrack } from "svelte";
   import {
     spreadsheetState,
     type SpreadsheetColumnProfile,
@@ -235,7 +236,7 @@
       .slice(0, 8);
   });
 
-  // --- CORE KOD YUKARI HAREKETİ (CANNOT FIND NAME HATALARININ ÇÖZÜMÜ) ---
+  // Helpers
   function excelColumnLabel(index: number) {
     let value = index;
     let label = "";
@@ -398,7 +399,6 @@
     event.stopPropagation();
     const menu = await Menu.new({ items });
     try {
-      // Tauri v2 {x, y} uyuşmazlık hatasının çözümü: PhysicalPosition nesnesi kullanıldı
       const pos = new PhysicalPosition(
         Math.round(event.clientX),
         Math.round(event.clientY),
@@ -543,7 +543,7 @@
     ]);
   }
 
-  // --- CANVAS MOTORU ---
+  // --- CANVAS ÇİZİM ENGINE ---
   function drawCanvas() {
     if (
       !canvasElement ||
@@ -554,11 +554,21 @@
       return;
 
     const ctx = canvasContext;
-    const dpr = window.devicePixelRatio || 1;
 
-    canvasElement.width = viewportWidth * dpr;
-    canvasElement.height = viewportHeight * dpr;
-    ctx.scale(dpr, dpr);
+    // Sonsuz döngüyü önleyen can alıcı değişiklik: Svelte takibinden çıkarıyoruz (untrack)
+    untrack(() => {
+      if (!canvasElement) return;
+      const dpr = window.devicePixelRatio || 1;
+      if (
+        canvasElement.width !== viewportWidth * dpr ||
+        canvasElement.height !== viewportHeight * dpr
+      ) {
+        canvasElement.width = viewportWidth * dpr;
+        canvasElement.height = viewportHeight * dpr;
+        ctx.scale(dpr, dpr);
+      }
+    });
+
     ctx.clearRect(0, 0, viewportWidth, viewportHeight);
 
     if (!spreadsheetState.hasWorkbook) return;
@@ -971,19 +981,14 @@
       activeSearchIndex = 0;
   });
   $effect(() => {
-    if (
-      !canvasElement ||
-      !canvasContext ||
-      viewportWidth === 0 ||
-      viewportHeight === 0
-    )
-      return;
     activeRows;
     spreadsheetState.scrollTop;
     spreadsheetState.scrollLeft;
     selectedRow;
     selectedCol;
     spreadsheetState.searchResults;
+    viewportWidth;
+    viewportHeight; // Viewport takibi yapılıyor ama untrack ile döngü kırıldı
     requestAnimationFrame(() => drawCanvas());
   });
   $effect(() => {
