@@ -4,6 +4,7 @@ import type { WindowFooterMeta, WindowStatus, WindowToolbarAction } from '$lib/t
 import AuthModule from '$modules/AuthModule.svelte';
 import CustomizeModule from '$modules/CustomizeModule.svelte';
 import SpreadsheetModule from '$modules/SpreadsheetModule.svelte';
+import SystemShutdownModule from '$modules/SystemShutdownModule.svelte';
 import EmptyModule from '$modules/EmptyModule.svelte';
 
 export interface ModuleManifest extends ModuleDefinition {
@@ -97,6 +98,34 @@ export const moduleCatalog = [
     footerMeta: [
       { label: 'Area', value: 'DATA' },
       { label: 'Mode', value: 'LOCAL' }
+    ]
+  },
+  {
+    id: 'system-shutdown',
+    title: 'System Shutdown Console',
+    shortTitle: 'Shutdown',
+    subtitle: 'Controlled shell and backend termination',
+    description: 'FLEXBOX shell, Tauri runtime ve sidecar backend icin kontrollu kapanis modulu.',
+    group: 'System',
+    icon: 'SD',
+    keywords: ['shutdown', 'system', 'exit', 'close', 'terminate'],
+    defaultBounds: {
+      x: 210,
+      y: 132,
+      width: 780,
+      height: 520,
+      minWidth: 620,
+      minHeight: 420
+    },
+    component: SystemShutdownModule,
+    status: { label: 'SYS', tone: 'danger' },
+    toolbarActions: [
+      { id: 'center-window', label: 'Center' },
+      { id: 'reset-window', label: 'Reset' }
+    ],
+    footerMeta: [
+      { label: 'Area', value: 'SYSTEM' },
+      { label: 'Mode', value: 'CONTROLLED' }
     ]
   },
   {

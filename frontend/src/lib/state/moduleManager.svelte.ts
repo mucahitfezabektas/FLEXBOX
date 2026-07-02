@@ -62,6 +62,7 @@ class ModuleManager {
     auth: createInitialState(moduleDefinitions.auth),
     customize: createInitialState(moduleDefinitions.customize),
     spreadsheet: createInitialState(moduleDefinitions.spreadsheet),
+    'system-shutdown': createInitialState(moduleDefinitions['system-shutdown']),
     empty: createInitialState(moduleDefinitions.empty)
   });
   workspaceSize = $state({

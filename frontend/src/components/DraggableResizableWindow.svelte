@@ -4,10 +4,8 @@
   import { cubicOut } from 'svelte/easing';
   import { moduleManager, type ModuleId, type SnapTarget } from '$lib/state/moduleManager.svelte';
   import type {
-    WindowFooterMeta,
     WindowStatus,
     WindowStatusTone,
-    WindowToolbarAction
   } from '$lib/types/windowChrome';
   import type { ModuleTheme, WindowBounds } from '$lib/modules/types';
 
@@ -45,9 +43,6 @@
     subtitle = '',
     theme = 'default',
     status = null,
-    toolbarActions = [],
-    footerMeta = [],
-    onToolbarAction,
     children
   }: {
     moduleId: ModuleId;
@@ -56,9 +51,6 @@
     subtitle?: string;
     theme?: ModuleTheme;
     status?: WindowStatus | null;
-    toolbarActions?: WindowToolbarAction[];
-    footerMeta?: WindowFooterMeta[];
-    onToolbarAction?: ((actionId: string) => void) | undefined;
     children: Snippet;
   } = $props();
 
@@ -638,29 +630,6 @@
       </div>
     </div>
 
-    {#if toolbarActions.length > 0}
-      <div class={`window-toolbar select-none flex items-center justify-between gap-2 border-t px-4 py-2 ${isDocked(frameBounds) ? 'bg-white' : ''}`}>
-        <div class="flex flex-wrap items-center gap-1.5">
-          {#each toolbarActions as action (action.id)}
-            <button
-              class={`rounded-sm px-3 py-1.5 text-data-xs font-medium ${
-                action.kind === 'primary'
-                  ? 'enterprise-button-primary'
-                  : action.kind === 'danger'
-                    ? 'enterprise-button-danger'
-                    : 'toolbar-button'
-              }`}
-              onclick={() => onToolbarAction?.(action.id)}
-            >
-              {action.label}
-            </button>
-          {/each}
-        </div>
-        <div class="data-code text-data-xs text-enterprise-text-muted">
-          {frameBounds.width}x{frameBounds.height}
-        </div>
-      </div>
-    {/if}
   </div>
 
   <div class={`enterprise-scrollbar flex-1 overflow-auto p-4 ${isDocked(frameBounds) ? 'bg-white' : 'bg-white/72 backdrop-blur-[6px]'}`}>
@@ -715,7 +684,4 @@
       linear-gradient(180deg, rgba(251, 250, 244, 0.98) 0%, rgba(240, 237, 224, 0.98) 100%);
   }
 
-  .window-theme-sheets .window-toolbar {
-    background: rgba(244, 241, 229, 0.92);
-  }
 </style>

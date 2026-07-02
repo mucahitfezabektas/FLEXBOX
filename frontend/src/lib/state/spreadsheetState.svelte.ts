@@ -19,6 +19,8 @@ export interface SpreadsheetLoadResult {
   total_cols: number;
   header_row_enabled: boolean;
   filter_query: string;
+  column_filter_col: number | null;
+  column_filter_value: string;
   sort_col: number | null;
   sort_direction: SpreadsheetSortDirection | null;
   sheets: SpreadsheetSheetSummary[];
@@ -43,6 +45,22 @@ export interface SpreadsheetSearchMatch {
   source_row: number;
   col: number;
   value: string;
+}
+
+export interface SpreadsheetCellUpdate {
+  source_row: number;
+  col_index: number;
+  value: string;
+}
+
+export interface SpreadsheetCellRef {
+  source_row: number;
+  col_index: number;
+}
+
+export interface SpreadsheetColumnValueSummary {
+  value: string;
+  count: number;
 }
 
 export interface SpreadsheetVerticalWindow {
@@ -219,6 +237,8 @@ class SpreadsheetState {
   selectedCol = $state<number | null>(null);
   searchQuery = $state('');
   filterQuery = $state('');
+  columnFilterCol = $state<number | null>(null);
+  columnFilterValue = $state('');
   headerRowEnabled = $state(false);
   sortCol = $state<number | null>(null);
   sortDirection = $state<SpreadsheetSortDirection | null>(null);
@@ -285,6 +305,7 @@ class SpreadsheetState {
     })
   );
   activeFilter = $derived(this.filterQuery.trim());
+  activeColumnFilter = $derived(this.columnFilterValue.trim());
   statusLabel = $derived.by(() => {
     if (this.isLoading) {
       return 'Loading';
@@ -379,6 +400,16 @@ class SpreadsheetState {
     void this.scheduleViewportSync();
   }
 
+  setColumnWidth(width: number) {
+    this.columnWidth = clamp(Math.round(width), 88, 320);
+    void this.scheduleViewportSync();
+  }
+
+  setRowHeight(height: number) {
+    this.rowHeight = clamp(Math.round(height), 20, 52);
+    void this.scheduleViewportSync();
+  }
+
   async loadExcelFile(path: string) {
     const normalizedPath = path.trim();
 
@@ -438,6 +469,41 @@ class SpreadsheetState {
     return this.configureView({ filterQuery: query });
   }
 
+  async applyColumnFilter(colIndex: number | null, value: string) {
+    return this.configureView({
+      columnFilterCol: colIndex,
+      columnFilterValue: value
+    });
+  }
+
+  async clearColumnFilter() {
+    return this.configureView({
+      columnFilterCol: null,
+      columnFilterValue: ''
+    });
+  }
+
+  async getColumnValueSummary(colIndex: number, query = '', limit = 80) {
+    if (!this.hasWorkbook) {
+      return [] as SpreadsheetColumnValueSummary[];
+    }
+
+    try {
+      return await invokeTauriCommand<SpreadsheetColumnValueSummary[]>(
+        'get_active_column_value_summary',
+        {
+          colIndex,
+          query: query.trim().length > 0 ? query : null,
+          limit
+        }
+      );
+    } catch (error) {
+      this.loadError =
+        error instanceof Error ? error.message : 'Column value summary could not be loaded.';
+      return [];
+    }
+  }
+
   async setHeaderRowEnabled(enabled: boolean) {
     return this.configureView({ headerRowEnabled: enabled });
   }
@@ -487,6 +553,8 @@ class SpreadsheetState {
   async clearViewOptions() {
     return this.configureView({
       filterQuery: '',
+      columnFilterCol: null,
+      columnFilterValue: '',
       sortCol: null,
       sortDirection: null
     });
@@ -494,6 +562,84 @@ class SpreadsheetState {
 
   async reloadVisibleChunk() {
     await this.syncViewportChunk(true);
+  }
+
+  async updateCellValue(sourceRow: number, colIndex: number, value: string) {
+    if (!this.hasWorkbook) {
+      return null;
+    }
+
+    this.isApplyingView = true;
+    this.loadError = null;
+
+    try {
+      const result = await invokeTauriCommand<SpreadsheetLoadResult>('set_active_cell_value', {
+        sourceRow,
+        colIndex,
+        value
+      });
+
+      this.applyWorkbookResult(result);
+      this.activePacket = null;
+      this.lastLoadedKey = '';
+      this.chunkCache.clear();
+      this.cacheEntryCount = 0;
+      await this.syncViewportChunk(true);
+      this.selectedSourceRow = sourceRow;
+      this.selectedCol = colIndex;
+      return result;
+    } catch (error) {
+      this.loadError =
+        error instanceof Error ? error.message : 'Cell value could not be updated.';
+      return null;
+    } finally {
+      this.isApplyingView = false;
+    }
+  }
+
+  async updateCellValues(updates: SpreadsheetCellUpdate[]) {
+    if (!this.hasWorkbook || updates.length === 0) {
+      return null;
+    }
+
+    this.isApplyingView = true;
+    this.loadError = null;
+
+    try {
+      const result = await invokeTauriCommand<SpreadsheetLoadResult>('set_active_cell_values', {
+        updates
+      });
+
+      this.applyWorkbookResult(result);
+      this.activePacket = null;
+      this.lastLoadedKey = '';
+      this.chunkCache.clear();
+      this.cacheEntryCount = 0;
+      await this.syncViewportChunk(true);
+      return result;
+    } catch (error) {
+      this.loadError =
+        error instanceof Error ? error.message : 'Cell range could not be updated.';
+      return null;
+    } finally {
+      this.isApplyingView = false;
+    }
+  }
+
+  async getCellValues(cells: SpreadsheetCellRef[]) {
+    if (!this.hasWorkbook || cells.length === 0) {
+      return [] as SpreadsheetCellUpdate[];
+    }
+
+    try {
+      return await invokeTauriCommand<SpreadsheetCellUpdate[]>('get_active_cell_values', {
+        cells
+      });
+    } catch (error) {
+      this.loadError =
+        error instanceof Error ? error.message : 'Cell values could not be loaded.';
+      return [];
+    }
   }
 
   async searchWorkbook(query: string) {
@@ -644,7 +790,11 @@ class SpreadsheetState {
       return activePacket.source_rows[displayRow - activePacket.start_row] ?? null;
     }
 
-    if (this.sortCol === null && this.activeFilter.length === 0) {
+    if (
+      this.sortCol === null &&
+      this.activeFilter.length === 0 &&
+      this.activeColumnFilter.length === 0
+    ) {
       const sourceRow = displayRow + (this.headerRowEnabled && this.sourceTotalRows > 0 ? 1 : 0);
       return sourceRow < this.sourceTotalRows ? sourceRow : null;
     }
@@ -662,6 +812,8 @@ class SpreadsheetState {
     this.totalCols = result.total_cols;
     this.headerRowEnabled = result.header_row_enabled;
     this.filterQuery = result.filter_query;
+    this.columnFilterCol = result.column_filter_col;
+    this.columnFilterValue = result.column_filter_value;
     this.sortCol = result.sort_col;
     this.sortDirection = result.sort_direction;
   }
@@ -695,6 +847,8 @@ class SpreadsheetState {
     this.selectedCol = null;
     this.searchQuery = '';
     this.filterQuery = '';
+    this.columnFilterCol = null;
+    this.columnFilterValue = '';
     this.headerRowEnabled = false;
     this.sortCol = null;
     this.sortDirection = null;
@@ -708,6 +862,8 @@ class SpreadsheetState {
   private async configureView(config: {
     headerRowEnabled?: boolean;
     filterQuery?: string;
+    columnFilterCol?: number | null;
+    columnFilterValue?: string;
     sortCol?: number | null;
     sortDirection?: SpreadsheetSortDirection | null;
   }) {
@@ -720,6 +876,9 @@ class SpreadsheetState {
 
     const nextHeaderRowEnabled = config.headerRowEnabled ?? this.headerRowEnabled;
     const nextFilterQuery = config.filterQuery ?? this.filterQuery;
+    const nextColumnFilterCol =
+      config.columnFilterCol === undefined ? this.columnFilterCol : (config.columnFilterCol ?? null);
+    const nextColumnFilterValue = config.columnFilterValue ?? this.columnFilterValue;
     const nextSortCol =
       config.sortCol === undefined ? this.sortCol : (config.sortCol ?? null);
     const nextSortDirection =
@@ -729,6 +888,8 @@ class SpreadsheetState {
       const result = await invokeTauriCommand<SpreadsheetLoadResult>('configure_active_sheet_view', {
         headerRowEnabled: nextHeaderRowEnabled,
         filterQuery: nextFilterQuery.trim().length > 0 ? nextFilterQuery : null,
+        columnFilterCol: nextColumnFilterValue.trim().length > 0 ? nextColumnFilterCol : null,
+        columnFilterValue: nextColumnFilterValue.trim().length > 0 ? nextColumnFilterValue : null,
         sortCol: nextSortCol,
         sortDirection: nextSortCol === null ? null : nextSortDirection
       });
@@ -765,7 +926,7 @@ class SpreadsheetState {
   }
 
   private buildCacheKey(startRow: number, rowLimit: number, startCol: number, colLimit: number) {
-    return `${this.activeSheetIndex}:${this.headerRowEnabled ? 1 : 0}:${this.filterQuery}:${this.sortCol ?? 'none'}:${
+    return `${this.activeSheetIndex}:${this.headerRowEnabled ? 1 : 0}:${this.filterQuery}:${this.columnFilterCol ?? 'none'}:${this.columnFilterValue}:${this.sortCol ?? 'none'}:${
       this.sortDirection ?? 'none'
     }:${startRow}:${rowLimit}:${startCol}:${colLimit}`;
   }

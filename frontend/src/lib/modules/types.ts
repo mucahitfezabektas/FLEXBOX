@@ -1,5 +1,5 @@
-export type ModuleId = 'auth' | 'customize' | 'spreadsheet' | 'empty';
-export type ModuleGroup = 'Security' | 'Configuration' | 'Data' | 'Framework';
+export type ModuleId = 'auth' | 'customize' | 'spreadsheet' | 'system-shutdown' | 'empty';
+export type ModuleGroup = 'Security' | 'Configuration' | 'Data' | 'System' | 'Framework';
 export type ModuleTheme = 'default' | 'sheets';
 
 export interface WindowBounds {

@@ -4,6 +4,7 @@ use calamine::{open_workbook_auto, Data, Range, Reader};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     cmp::Ordering,
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -47,6 +48,8 @@ enum SpreadsheetSortKey {
 struct SheetViewRuntime {
     header_row_enabled: bool,
     filter_query: Option<String>,
+    column_filter_col: Option<usize>,
+    column_filter_value: Option<String>,
     sort_col: Option<usize>,
     sort_direction: Option<SpreadsheetSortDirection>,
     visible_row_count: usize,
@@ -56,6 +59,7 @@ struct SheetViewRuntime {
 struct SheetRuntime {
     name: String,
     range: Range<Data>,
+    edits: HashMap<(usize, usize), Data>,
     total_rows: usize,
     total_cols: usize,
     view: SheetViewRuntime,
@@ -96,6 +100,8 @@ struct SpreadsheetLoadResult {
     total_cols: usize,
     header_row_enabled: bool,
     filter_query: String,
+    column_filter_col: Option<usize>,
+    column_filter_value: String,
     sort_col: Option<usize>,
     sort_direction: Option<SpreadsheetSortDirection>,
     sheets: Vec<SpreadsheetSheetSummary>,
@@ -122,6 +128,25 @@ struct SpreadsheetSearchMatch {
     source_row: usize,
     col: usize,
     value: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SpreadsheetColumnValueSummary {
+    value: String,
+    count: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SpreadsheetCellUpdate {
+    source_row: usize,
+    col_index: usize,
+    value: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SpreadsheetCellRef {
+    source_row: usize,
+    col_index: usize,
 }
 
 struct LoadedWorkbook {
@@ -222,6 +247,32 @@ fn serialize_cell(cell: &Data) -> String {
     }
 }
 
+fn parse_cell_input(value: &str) -> Data {
+    let trimmed = value.trim();
+
+    if trimmed.is_empty() {
+        return Data::Empty;
+    }
+
+    if trimmed.eq_ignore_ascii_case("true") {
+        return Data::Bool(true);
+    }
+
+    if trimmed.eq_ignore_ascii_case("false") {
+        return Data::Bool(false);
+    }
+
+    if let Ok(integer) = trimmed.parse::<i64>() {
+        return Data::Int(integer);
+    }
+
+    if let Ok(float) = trimmed.parse::<f64>() {
+        return Data::Float(float);
+    }
+
+    Data::String(value.to_string())
+}
+
 fn normalize_optional_query(query: Option<String>) -> Option<String> {
     query
         .map(|value| value.trim().to_string())
@@ -275,13 +326,20 @@ fn compare_sort_keys(left: &SpreadsheetSortKey, right: &SpreadsheetSortKey) -> O
     }
 }
 
+fn cell_value_at(sheet: &SheetRuntime, source_row: usize, col_index: usize) -> String {
+    if let Some(value) = sheet.edits.get(&(source_row, col_index)) {
+        return serialize_cell(value);
+    }
+
+    sheet.range
+        .get((source_row, col_index))
+        .map(serialize_cell)
+        .unwrap_or_default()
+}
+
 fn row_matches_query(sheet: &SheetRuntime, source_row: usize, query: &str) -> bool {
     for col_index in 0..sheet.total_cols {
-        let value = sheet
-            .range
-            .get((source_row, col_index))
-            .map(serialize_cell)
-            .unwrap_or_default();
+        let value = cell_value_at(sheet, source_row, col_index);
 
         if value.to_lowercase().contains(query) {
             return true;
@@ -289,6 +347,17 @@ fn row_matches_query(sheet: &SheetRuntime, source_row: usize, query: &str) -> bo
     }
 
     false
+}
+
+fn row_matches_column_filter(
+    sheet: &SheetRuntime,
+    source_row: usize,
+    column_filter_col: usize,
+    column_filter_value: &str,
+) -> bool {
+    cell_value_at(sheet, source_row, column_filter_col)
+        .to_lowercase()
+        .contains(column_filter_value)
 }
 
 fn rebuild_sheet_view(sheet: &mut SheetRuntime) {
@@ -310,13 +379,28 @@ fn rebuild_sheet_view(sheet: &mut SheetRuntime) {
         .as_ref()
         .map(|value| value.to_lowercase())
         .filter(|value| !value.is_empty());
+    let column_filter_col = sheet
+        .view
+        .column_filter_col
+        .filter(|column| *column < sheet.total_cols);
+    let column_filter_value = sheet
+        .view
+        .column_filter_value
+        .as_ref()
+        .map(|value| value.to_lowercase())
+        .filter(|value| !value.is_empty());
+    sheet.view.column_filter_col = column_filter_col;
     let sort_col = sheet
         .view
         .sort_col
         .filter(|column| *column < sheet.total_cols);
     sheet.view.sort_col = sort_col;
+    if column_filter_col.is_none() || column_filter_value.is_none() {
+        sheet.view.column_filter_value = None;
+    }
 
-    let needs_materialized_rows = normalized_query.is_some() || sort_col.is_some();
+    let needs_materialized_rows =
+        normalized_query.is_some() || sort_col.is_some() || column_filter_col.is_some();
     if !needs_materialized_rows {
         sheet.view.visible_row_count = sheet.total_rows - data_start_row;
         sheet.view.visible_row_indices = None;
@@ -329,6 +413,13 @@ fn rebuild_sheet_view(sheet: &mut SheetRuntime) {
         row_indices.retain(|row_index| row_matches_query(sheet, *row_index, query));
     }
 
+    if let (Some(filter_col), Some(filter_value)) = (column_filter_col, column_filter_value.as_deref())
+    {
+        row_indices.retain(|row_index| {
+            row_matches_column_filter(sheet, *row_index, filter_col, filter_value)
+        });
+    }
+
     if let Some(sort_column) = sort_col {
         let sort_direction = sheet
             .view
@@ -337,11 +428,7 @@ fn rebuild_sheet_view(sheet: &mut SheetRuntime) {
         let mut keyed_rows: Vec<(usize, SpreadsheetSortKey)> = row_indices
             .into_iter()
             .map(|row_index| {
-                let value = sheet
-                    .range
-                    .get((row_index, sort_column))
-                    .map(serialize_cell)
-                    .unwrap_or_default();
+                let value = cell_value_at(sheet, row_index, sort_column);
                 (row_index, build_sort_key(&value))
             })
             .collect();
@@ -388,10 +475,7 @@ impl SheetRuntime {
 
         for col_index in start_col..end_col {
             let value = if self.view.header_row_enabled && self.total_rows > 0 {
-                self.range
-                    .get((0, col_index))
-                    .map(serialize_cell)
-                    .unwrap_or_default()
+                cell_value_at(self, 0, col_index)
             } else {
                 String::new()
             };
@@ -442,6 +526,8 @@ fn build_load_result(
         total_cols: active_sheet.total_cols,
         header_row_enabled: active_sheet.view.header_row_enabled,
         filter_query: active_sheet.view.filter_query.clone().unwrap_or_default(),
+        column_filter_col: active_sheet.view.column_filter_col,
+        column_filter_value: active_sheet.view.column_filter_value.clone().unwrap_or_default(),
         sort_col: active_sheet.view.sort_col,
         sort_direction: active_sheet.view.sort_direction,
         sheets: build_sheet_summaries(sheets),
@@ -480,6 +566,7 @@ async fn load_excel_file(
                 let mut sheet = SheetRuntime {
                     name: sheet_name,
                     range,
+                    edits: HashMap::new(),
                     total_rows,
                     total_cols,
                     view: SheetViewRuntime::default(),
@@ -542,6 +629,8 @@ async fn configure_active_sheet_view(
     state: tauri::State<'_, SpreadsheetState>,
     header_row_enabled: bool,
     filter_query: Option<String>,
+    column_filter_col: Option<usize>,
+    column_filter_value: Option<String>,
     sort_col: Option<usize>,
     sort_direction: Option<SpreadsheetSortDirection>,
 ) -> Result<SpreadsheetLoadResult, String> {
@@ -557,6 +646,12 @@ async fn configure_active_sheet_view(
             .ok_or_else(|| "no Excel workbook has been loaded".to_string())?;
         sheet.view.header_row_enabled = header_row_enabled;
         sheet.view.filter_query = normalize_optional_query(filter_query);
+        sheet.view.column_filter_col = column_filter_col.filter(|column| *column < sheet.total_cols);
+        sheet.view.column_filter_value = normalize_optional_query(column_filter_value);
+        if sheet.view.column_filter_col.is_none() || sheet.view.column_filter_value.is_none() {
+            sheet.view.column_filter_col = None;
+            sheet.view.column_filter_value = None;
+        }
         sheet.view.sort_col = sort_col.filter(|column| *column < sheet.total_cols);
         sheet.view.sort_direction = if sheet.view.sort_col.is_some() {
             sort_direction.or(Some(SpreadsheetSortDirection::Asc))
@@ -605,11 +700,7 @@ async fn find_in_active_sheet(
             };
 
             for col_index in 0..sheet.total_cols {
-                let value = sheet
-                    .range
-                    .get((source_row, col_index))
-                    .map(serialize_cell)
-                    .unwrap_or_default();
+                let value = cell_value_at(sheet, source_row, col_index);
 
                 if value.is_empty() || !value.to_lowercase().contains(&normalized_query) {
                     continue;
@@ -632,6 +723,109 @@ async fn find_in_active_sheet(
     })
     .await
     .map_err(|error| format!("failed to search worksheet: {error}"))?
+}
+
+#[tauri::command]
+async fn get_active_column_value_summary(
+    state: tauri::State<'_, SpreadsheetState>,
+    col_index: usize,
+    query: Option<String>,
+    limit: usize,
+) -> Result<Vec<SpreadsheetColumnValueSummary>, String> {
+    let normalized_query = query
+        .map(|value| value.trim().to_lowercase())
+        .filter(|value| !value.is_empty());
+    let runtime = state.0.clone();
+
+    tauri::async_runtime::spawn_blocking(
+        move || -> Result<Vec<SpreadsheetColumnValueSummary>, String> {
+            let runtime = runtime
+                .lock()
+                .map_err(|_| "failed to acquire spreadsheet state".to_string())?;
+            let sheet = runtime
+                .active_sheet()
+                .ok_or_else(|| "no Excel workbook has been loaded".to_string())?;
+
+            if col_index >= sheet.total_cols {
+                return Err("requested column is out of range".to_string());
+            }
+
+            let result_limit = limit.clamp(1, 200);
+            let mut counts: HashMap<String, usize> = HashMap::new();
+
+            for display_row in 0..sheet.view.visible_row_count {
+                let Some(source_row) = sheet.resolve_source_row(display_row) else {
+                    continue;
+                };
+
+                let value = cell_value_at(sheet, source_row, col_index);
+                let normalized_value = value.trim();
+                if normalized_value.is_empty() {
+                    continue;
+                }
+
+                if let Some(query_value) = normalized_query.as_deref() {
+                    if !normalized_value.to_lowercase().contains(query_value) {
+                        continue;
+                    }
+                }
+
+                *counts.entry(normalized_value.to_string()).or_insert(0) += 1;
+            }
+
+            let mut summaries: Vec<SpreadsheetColumnValueSummary> = counts
+                .into_iter()
+                .map(|(value, count)| SpreadsheetColumnValueSummary { value, count })
+                .collect();
+
+            summaries.sort_by(|left, right| {
+                right
+                    .count
+                    .cmp(&left.count)
+                    .then_with(|| left.value.cmp(&right.value))
+            });
+            summaries.truncate(result_limit);
+
+            Ok(summaries)
+        },
+    )
+    .await
+    .map_err(|error| format!("failed to load column value summary: {error}"))?
+}
+
+#[tauri::command]
+async fn get_active_cell_values(
+    state: tauri::State<'_, SpreadsheetState>,
+    cells: Vec<SpreadsheetCellRef>,
+) -> Result<Vec<SpreadsheetCellUpdate>, String> {
+    let runtime = state.0.clone();
+
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<SpreadsheetCellUpdate>, String> {
+        let runtime = runtime
+            .lock()
+            .map_err(|_| "failed to acquire spreadsheet state".to_string())?;
+        let sheet = runtime
+            .active_sheet()
+            .ok_or_else(|| "no Excel workbook has been loaded".to_string())?;
+
+        let mut values = Vec::with_capacity(cells.len());
+
+        for cell in cells {
+            if cell.source_row >= sheet.total_rows || cell.col_index >= sheet.total_cols {
+                continue;
+            }
+
+            values.push(SpreadsheetCellUpdate {
+                source_row: cell.source_row,
+                col_index: cell.col_index,
+                value: cell_value_at(sheet, cell.source_row, cell.col_index),
+            });
+        }
+
+        Ok(values)
+    })
+    .await
+    .map_err(|error| format!("failed to read worksheet cells: {error}"))?
 }
 
 #[tauri::command]
@@ -689,11 +883,7 @@ fn get_data_chunk(
         let mut row = Vec::with_capacity(end_col.saturating_sub(start_col));
 
         for col_index in start_col..end_col {
-            let value = sheet
-                .range
-                .get((source_row, col_index))
-                .map(serialize_cell)
-                .unwrap_or_default();
+            let value = cell_value_at(sheet, source_row, col_index);
             row.push(value);
         }
 
@@ -713,6 +903,85 @@ fn get_data_chunk(
         source_rows,
         rows,
     })
+}
+
+#[tauri::command]
+async fn set_active_cell_value(
+    state: tauri::State<'_, SpreadsheetState>,
+    source_row: usize,
+    col_index: usize,
+    value: String,
+) -> Result<SpreadsheetLoadResult, String> {
+    let runtime = state.0.clone();
+
+    tauri::async_runtime::spawn_blocking(move || -> Result<SpreadsheetLoadResult, String> {
+        let mut runtime = runtime
+            .lock()
+            .map_err(|_| "failed to acquire spreadsheet state".to_string())?;
+
+        let sheet = runtime
+            .active_sheet_mut()
+            .ok_or_else(|| "no Excel workbook has been loaded".to_string())?;
+
+        if source_row >= sheet.total_rows {
+            return Err("requested source row is out of range".to_string());
+        }
+
+        if col_index >= sheet.total_cols {
+            return Err("requested column is out of range".to_string());
+        }
+
+        sheet.edits
+            .insert((source_row, col_index), parse_cell_input(&value));
+        rebuild_sheet_view(sheet);
+
+        let file_name = runtime
+            .file_name
+            .clone()
+            .unwrap_or_else(|| "workbook.xlsx".to_string());
+        build_load_result(&file_name, runtime.active_sheet_index, &runtime.sheets)
+    })
+    .await
+    .map_err(|error| format!("failed to update worksheet cell: {error}"))?
+}
+
+#[tauri::command]
+async fn set_active_cell_values(
+    state: tauri::State<'_, SpreadsheetState>,
+    updates: Vec<SpreadsheetCellUpdate>,
+) -> Result<SpreadsheetLoadResult, String> {
+    let runtime = state.0.clone();
+
+    tauri::async_runtime::spawn_blocking(move || -> Result<SpreadsheetLoadResult, String> {
+        let mut runtime = runtime
+            .lock()
+            .map_err(|_| "failed to acquire spreadsheet state".to_string())?;
+
+        let sheet = runtime
+            .active_sheet_mut()
+            .ok_or_else(|| "no Excel workbook has been loaded".to_string())?;
+
+        for update in updates {
+            if update.source_row >= sheet.total_rows || update.col_index >= sheet.total_cols {
+                continue;
+            }
+
+            sheet.edits.insert(
+                (update.source_row, update.col_index),
+                parse_cell_input(&update.value),
+            );
+        }
+
+        rebuild_sheet_view(sheet);
+
+        let file_name = runtime
+            .file_name
+            .clone()
+            .unwrap_or_else(|| "workbook.xlsx".to_string());
+        build_load_result(&file_name, runtime.active_sheet_index, &runtime.sheets)
+    })
+    .await
+    .map_err(|error| format!("failed to update worksheet cells: {error}"))?
 }
 
 fn stop_sidecar(sidecar_state: &BackendSidecarState) {
@@ -881,7 +1150,11 @@ fn main() {
             load_excel_file,
             set_active_sheet,
             configure_active_sheet_view,
+            set_active_cell_value,
+            set_active_cell_values,
             find_in_active_sheet,
+            get_active_column_value_summary,
+            get_active_cell_values,
             get_data_chunk
         ])
         .build(tauri::generate_context!())

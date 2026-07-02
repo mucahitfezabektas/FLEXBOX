@@ -217,19 +217,6 @@
     openModule(definition.id);
   }
 
-  function handleToolbarAction(moduleId: ModuleId, actionId: string) {
-    switch (actionId) {
-      case 'center-window':
-        moduleManager.centerModule(moduleId);
-        break;
-      case 'reset-window':
-        moduleManager.resetModuleLayout(moduleId);
-        break;
-      default:
-        break;
-    }
-  }
-
   function closeModuleFromTaskbar(event: MouseEvent, id: ModuleId) {
     event.preventDefault();
     event.stopPropagation();
@@ -567,9 +554,6 @@
           subtitle={definition.subtitle}
           theme={definition.theme}
           status={moduleEntry.status}
-          toolbarActions={moduleEntry.toolbarActions}
-          footerMeta={moduleEntry.footerMeta}
-          onToolbarAction={(actionId) => handleToolbarAction(definition.id, actionId)}
         >
           <ModuleComponent />
         </DraggableResizableWindow>
